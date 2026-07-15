@@ -146,23 +146,28 @@ hot-reload from killing an actively-running import. This deliberately does NOT
 live in Next's `instrumentation.ts`: its separate bundling pass pulls imgly's
 native binary into the route bundle and 500s the app (observed live 2026-07-15).
 
-## Background removal status (read before "fixing" it)
+## Background removal — how it works now (crop-first + child process + QA gate)
 
-Two independent problems were found on 2026-07-15, both documented in
-`docs/DECISIONS.md`:
+Two problems were found on 2026-07-15 and both are solved (see
+`docs/DECISIONS.md`):
 
-1. **Windows crash**: loading imgly's ONNX runtime into a process where
-   sharp/libvips is active aborts the whole Node process (`GLib-GObject-CRITICAL`,
-   uncatchable). Hence `PSOS_DISABLE_BG_REMOVAL=1` on the Windows dev machine.
-2. **Quality failure (the bigger one)**: on Linux (VM) it runs fine (~12–17 s per
-   image) but output on real wardrobe photos is poor — it keeps tripods/feet as
-   "foreground", and smears dark-garment-on-dark-bedsheet into semi-transparent
-   halos. Verified by eye on three representative photos.
+1. **Windows crash** — imgly's ONNX runtime + sharp's libvips in one process
+   abort the server (uncatchable native conflict). Fix: imgly runs in its own
+   node child process (`scripts/bg-worker.mjs`, spawned by
+   `imaging/background-removal.ts`, 180 s timeout). The worker must never
+   import sharp; a dead worker means "no cutout", never a dead server.
+2. **Quality** — imgly output on full-frame photos was garbage (kept
+   tripod/feet, smeared dark-on-dark). Fix: it only ever receives the **bbox
+   crop**, which turns output product-quality. Residual dark-garment-on-dark-
+   sheet smears are caught by `imaging/cutout-qa.ts` (corners + border must be
+   transparent, opaque fraction sane); a rejected cutout falls back to the crop.
 
-Strategy: **crop-first, transparency later.** The AI bbox crop (stage 6) delivers
-clean catalog tiles without any segmentation. True product-style transparent
-cutouts are a possible future layer (better segmentation model, isolated in a
-child process, likely on the VM) — decide after living with crops.
+Image outcome per item: `front`/`back` originals (disk only, never shown in the
+UI), `front_cropped`/`back_cropped` (item page), `transparent_front` (when QA
+passes), `thumbnail` = cutout > crop > full frame, flattened on the app
+background. `scripts/backfill-images.ts` retrofits all of this onto items
+imported earlier (boxes from `ai_raw` or a box-only AI call; never touches
+metadata). `PSOS_DISABLE_BG_REMOVAL=1` now just skips the cutout step.
 
 ## Storage & data layout
 

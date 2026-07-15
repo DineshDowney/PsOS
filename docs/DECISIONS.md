@@ -3,6 +3,19 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-15 (later) — Cutouts shipped: crop → child-process imgly → deterministic QA gate
+Follow-up to the entry below: imgly turned out fine when fed a PRE-CROPPED garment image and
+run in its own child process (`scripts/bg-worker.mjs` — no sharp in that process, so the
+Windows GLib conflict can't occur; worker death = skipped cutout, not dead server). Verified
+on Windows: clean product-style cutouts, ~3 s/image once weights are cached. Residual risk
+(dark garment smearing into dark sheet) is caught by `imaging/cutout-qa.ts` — corners/border
+must be transparent, opaque fraction sane — with automatic fallback to the crop, so the worst
+case equals crop-only quality. UI policy per Dinesh: raw photos (tripod/feet in frame) never
+render anywhere; item page shows `front_cropped`/`back_cropped`, the wardrobe tile shows the
+cutout flattened on the app background. `PSOS_DISABLE_BG_REMOVAL` now merely skips the cutout
+step. NOTE for next VM boot: remove the flag from `psos.service` and `git pull` — the VM
+still runs the flag-on config.
+
 ## 2026-07-15 — Photo quality: crop-first via AI bounding box; imgly rejected on quality
 imgly runs fine on Linux (~12–17 s/image; the crash is Windows-specific) but its OUTPUT on
 real wardrobe photos is poor: monopod/feet kept as "foreground", dark garments smeared into

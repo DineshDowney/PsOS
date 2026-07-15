@@ -33,10 +33,14 @@ function imageUrl(path: string): string {
 }
 
 function mapImage(row: ImageRow): ItemImage {
+  // Content-hash the URL: images are served immutable-cached for a year, and
+  // the pipeline/backfill rewrite bytes at the SAME path (thumbnail.jpg), so
+  // the version param is what makes browsers pick up regenerated images.
+  const v = row.sha256 ? `?v=${row.sha256.slice(0, 10)}` : "";
   return {
     id: row.id,
     role: row.role,
-    url: imageUrl(row.path),
+    url: imageUrl(row.path) + v,
     width: row.width,
     height: row.height,
   };
