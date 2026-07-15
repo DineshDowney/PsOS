@@ -1,0 +1,263 @@
+"use client";
+
+import { use, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiSend } from "@/lib/api";
+import {
+  CATEGORIES, FORMALITIES, type Item, type WearEvent,
+} from "@/shared/types";
+import { Button, Field, PageTitle, Spinner, StatusBadge, inputClass } from "@/components/ui";
+import { useToast } from "@/components/providers";
+
+function Provenance({ item, field }: { item: Item; field: string }) {
+  const src = item.fieldSources[field];
+  if (!src) return null;
+  return (
+    <span className={`ml-2 text-[9px] uppercase tracking-[0.2em] ${src === "user" ? "text-ok" : "text-faint"}`}>
+      {src}
+    </span>
+  );
+}
+
+export default function ItemPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const toast = useToast();
+  const qc = useQueryClient();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["item", id],
+    queryFn: () => apiGet<{ item: Item }>(`/api/items/${id}`),
+  });
+  const { data: wearData } = useQuery({
+    queryKey: ["wear", id],
+    queryFn: () => apiGet<{ events: WearEvent[] }>(`/api/wear?itemId=${id}`),
+  });
+
+  const item = data?.item;
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [tagInput, setTagInput] = useState("");
+
+  useEffect(() => {
+    if (!item) return;
+    setForm({
+      name: item.name ?? "",
+      category: item.category ?? "",
+      subcategory: item.subcategory ?? "",
+      description: item.description ?? "",
+      notes: item.notes ?? "",
+      primaryColor: item.primaryColor ?? "",
+      colorDetail: item.colorDetail ?? "",
+      pattern: item.pattern ?? "",
+      fit: item.fit ?? "",
+      material: item.material ?? "",
+      brand: item.brand ?? "",
+      size: item.size ?? "",
+      formality: item.formality ?? "",
+      price: item.price != null ? String(item.price) : "",
+    });
+  }, [item]);
+
+  const patch = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiSend<{ item: Item }>(`/api/items/${id}`, "PATCH", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["item", id] });
+      qc.invalidateQueries({ queryKey: ["items"] });
+    },
+  });
+
+  const save = () => {
+    patch.mutate(
+      {
+        name: form.name,
+        category: form.category || null,
+        subcategory: form.subcategory || null,
+        description: form.description || null,
+        notes: form.notes || null,
+        primaryColor: form.primaryColor || null,
+        colorDetail: form.colorDetail || null,
+        pattern: form.pattern || null,
+        fit: form.fit || null,
+        material: form.material || null,
+        brand: form.brand || null,
+        size: form.size || null,
+        formality: form.formality || null,
+        price: form.price ? Number(form.price) : null,
+      },
+      { onSuccess: () => toast("info", "Saved") },
+    );
+  };
+
+  const wearToday = useMutation({
+    mutationFn: () =>
+      apiSend(`/api/wear`, "POST", {
+        itemIds: [id],
+        wornOn: new Date().toLocaleDateString("sv-SE"),
+      }),
+    onSuccess: () => {
+      toast("info", "Wear logged");
+      qc.invalidateQueries({ queryKey: ["item", id] });
+      qc.invalidateQueries({ queryKey: ["wear", id] });
+    },
+  });
+
+  if (isLoading || !item) return <Spinner label="Loading" />;
+
+  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  return (
+    <div>
+      <PageTitle sub={item.state === "draft" ? "Draft — review and confirm" : undefined}>
+        {item.name || "Untitled"}
+      </PageTitle>
+
+      <div className="grid gap-10 lg:grid-cols-[minmax(280px,420px)_1fr]">
+        <div className="flex flex-col gap-4">
+          {item.images
+            .filter((i) => i.role !== "thumbnail")
+            .map((img) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={img.id}
+                src={img.url}
+                alt={`${item.name} ${img.role}`}
+                className="w-full border border-line bg-surface object-contain"
+              />
+            ))}
+          {item.images.length === 0 ? (
+            <div className="flex aspect-square items-center justify-center border border-line text-faint">
+              no photos
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusBadge status={item.status} />
+            <span className="text-xs text-muted">
+              worn {item.wearCount}× {item.lastWornAt ? `· last ${item.lastWornAt.slice(0, 10)}` : ""}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(["available", "laundry", "unavailable"] as const).map((s) => (
+              <Button
+                key={s}
+                variant={item.status === s ? "solid" : "outline"}
+                onClick={() =>
+                  patch.mutate({ status: s }, { onSuccess: () => toast("info", `Marked ${s}`) })
+                }
+              >
+                {s}
+              </Button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={() => wearToday.mutate()}>Wore it today</Button>
+            {item.state === "draft" ? (
+              <Button
+                variant="solid"
+                onClick={async () => {
+                  await apiSend(`/api/items/${id}/confirm`, "POST");
+                  toast("info", "Added to wardrobe");
+                  qc.invalidateQueries();
+                }}
+              >
+                Confirm import
+              </Button>
+            ) : null}
+            <Button
+              variant="danger"
+              onClick={async () => {
+                if (!confirm("Archive this item? It disappears from the catalog.")) return;
+                await apiSend(`/api/items/${id}`, "DELETE");
+                router.push("/wardrobe");
+              }}
+            >
+              Archive
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex max-w-2xl flex-col gap-5">
+          <Field label="Name"><span><input className={inputClass} value={form.name ?? ""} onChange={set("name")} /><Provenance item={item} field="name" /></span></Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Category">
+              <select className={inputClass} value={form.category ?? ""} onChange={set("category")}>
+                <option value="">—</option>
+                {CATEGORIES.map((c) => <option key={c} value={c}>{c.replace("_", " ")}</option>)}
+              </select>
+            </Field>
+            <Field label="Subcategory"><input className={inputClass} value={form.subcategory ?? ""} onChange={set("subcategory")} /></Field>
+            <Field label="Primary color"><input className={inputClass} value={form.primaryColor ?? ""} onChange={set("primaryColor")} /></Field>
+            <Field label="Color detail"><input className={inputClass} value={form.colorDetail ?? ""} onChange={set("colorDetail")} /></Field>
+            <Field label="Pattern"><input className={inputClass} value={form.pattern ?? ""} onChange={set("pattern")} /></Field>
+            <Field label="Fit"><input className={inputClass} value={form.fit ?? ""} onChange={set("fit")} /></Field>
+            <Field label="Material"><input className={inputClass} value={form.material ?? ""} onChange={set("material")} /></Field>
+            <Field label="Brand"><input className={inputClass} value={form.brand ?? ""} onChange={set("brand")} /></Field>
+            <Field label="Size"><input className={inputClass} value={form.size ?? ""} onChange={set("size")} /></Field>
+            <Field label="Formality">
+              <select className={inputClass} value={form.formality ?? ""} onChange={set("formality")}>
+                <option value="">—</option>
+                {FORMALITIES.map((f) => <option key={f} value={f}>{f.replace("_", " ")}</option>)}
+              </select>
+            </Field>
+            <Field label="Price"><input className={inputClass} type="number" value={form.price ?? ""} onChange={set("price")} /></Field>
+          </div>
+          <Field label="Description" hint={item.fieldSources.description === "user" ? "yours" : "AI draft — edits stick"}>
+            <textarea className={`${inputClass} min-h-20`} value={form.description ?? ""} onChange={set("description")} />
+          </Field>
+          <Field label="Notes" hint="private, never touched by AI">
+            <textarea className={`${inputClass} min-h-16`} value={form.notes ?? ""} onChange={set("notes")} />
+          </Field>
+
+          <Field label="Tags">
+            <div>
+              <div className="mb-2 flex flex-wrap gap-2">
+                {item.tags.map((t) => (
+                  <button
+                    key={t.tag}
+                    onClick={() => patch.mutate({ removeTag: t.tag })}
+                    title="click to remove"
+                    className="border border-line px-2 py-0.5 text-xs text-muted hover:border-danger hover:text-danger"
+                  >
+                    {t.tag} ×
+                  </button>
+                ))}
+              </div>
+              <input
+                className={inputClass}
+                placeholder="Add tag and press Enter"
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && tagInput.trim()) {
+                    patch.mutate({ addTag: tagInput.trim() });
+                    setTagInput("");
+                  }
+                }}
+              />
+            </div>
+          </Field>
+
+          <div>
+            <Button variant="solid" onClick={save} disabled={patch.isPending}>
+              {patch.isPending ? "Saving…" : "Save changes"}
+            </Button>
+          </div>
+
+          {wearData?.events.length ? (
+            <div className="mt-4 border-t border-line pt-4">
+              <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-muted">Wear history</div>
+              <ul className="space-y-1 text-sm text-muted">
+                {wearData.events.slice(0, 10).map((e) => (
+                  <li key={e.id}>{e.wornOn}{e.occasion ? ` — ${e.occasion}` : ""}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}

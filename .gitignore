@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# app data (wardrobe database + images) — back up via Settings → Export
+data/
+
+# misc
+*.log
+.DS_Store
+*.tsbuildinfo
+
+# local env
+.env
+.env.local
