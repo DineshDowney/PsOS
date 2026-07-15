@@ -66,7 +66,10 @@ async function boxFor(
 }
 
 async function main() {
-  const items = db.select().from(schema.items).where(ne(schema.items.state, "archived")).all();
+  // Optional single-item mode: npx tsx scripts/backfill-images.ts <itemId>
+  const only = process.argv[2];
+  let items = db.select().from(schema.items).where(ne(schema.items.state, "archived")).all();
+  if (only) items = items.filter((i) => i.id === only);
   console.log(`${items.length} items`);
   let done = 0;
 

@@ -71,13 +71,29 @@ export async function cutoutQa(png: Buffer): Promise<CutoutQaResult> {
   }
   const borderTransparentFraction = borderClear / borderTotal;
 
-  // 3. opaque fraction
+  // 3. opaque + partial-alpha fractions
   let opaque = 0;
+  let partial = 0;
   const total = w * h;
   for (let i = 3; i < data.length; i += channels) {
-    if (data[i]! > ALPHA_OPAQUE) opaque++;
+    const a = data[i]!;
+    if (a > ALPHA_OPAQUE) opaque++;
+    else if (a > ALPHA_CLEAR) partial++;
   }
   const opaqueFraction = opaque / total;
+
+  // A clean cutout has partial alpha only in a thin edge band. When partial
+  // dominates the garment, the matte is translucent — the item renders like
+  // an X-ray once flattened (seen on dark fabric: grey sweat shorts).
+  const partialRatio = partial / Math.max(1, partial + opaque);
+  if (partialRatio > 0.45) {
+    return {
+      ok: false,
+      reason: `translucent interior (${(partialRatio * 100).toFixed(0)}% partial alpha) — low-contrast matte`,
+      opaqueFraction,
+      borderTransparentFraction,
+    };
+  }
 
   if (borderTransparentFraction < 0.55) {
     return {
