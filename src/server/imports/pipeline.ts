@@ -1,17 +1,19 @@
 import path from "node:path";
+import fs from "node:fs";
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { getDb, schema } from "@/server/db/client";
 import { newId, nowIso } from "@/server/lib/ids";
 import { parseJson, toJson } from "@/server/lib/json";
-import { notFound } from "@/server/lib/errors";
+import { badRequest, notFound } from "@/server/lib/errors";
 import { createLimiter } from "@/server/lib/limiter";
 import { logActivity } from "@/server/services/activity";
 import { createDraftItem, applyInferenceToItem, getItem } from "@/server/services/catalog";
-import { itemImageDir, relativeImagePath, saveBuffer, sha256Of } from "@/server/imaging/storage";
+import { itemImageDir, relativeImagePath, resolveImagePath, saveBuffer, sha256Of } from "@/server/imaging/storage";
 import { normalizeUpload, makeThumbnail, cropToBox } from "@/server/imaging/thumbnails";
 import { dominantColors, type DominantColor } from "@/server/imaging/dominant-colors";
 import { removeBackground } from "@/server/imaging/background-removal";
 import { cutoutQa } from "@/server/imaging/cutout-qa";
+import { dhash } from "@/server/imaging/phash";
 import { extractItemMetadata } from "@/server/ai/extraction";
 import type { BBox, ImageRole, ImportJob, ImportStage, StageInfo } from "@/shared/types";
 
@@ -57,7 +59,15 @@ function updateJob(
     .run();
 }
 
-function addImageRow(itemId: string, role: ImageRole, absPath: string, buffer: Buffer, width?: number, height?: number): void {
+function addImageRow(
+  itemId: string,
+  role: ImageRole,
+  absPath: string,
+  buffer: Buffer,
+  width?: number,
+  height?: number,
+  phash?: string,
+): void {
   getDb()
     .insert(schema.itemImages)
     .values({
@@ -68,6 +78,7 @@ function addImageRow(itemId: string, role: ImageRole, absPath: string, buffer: B
       width: width ?? null,
       height: height ?? null,
       sha256: sha256Of(buffer),
+      phash: phash ?? null,
       createdAt: nowIso(),
     })
     .run();
@@ -117,16 +128,61 @@ export function startImport(input: StartImportInput): ImportJob {
     })
     .run();
   logActivity("system", "import.queued", { type: "import_job", id: jobId });
+  enqueue(jobId, item.id, input);
+  return getImportJob(jobId);
+}
 
-  // Fire and forget behind the limiter; progress lives in the DB.
+/** Fire and forget behind the limiter; progress lives in the DB. */
+function enqueue(jobId: string, itemId: string, input: StartImportInput): void {
   void runLimited(async () => {
     updateJob(jobId, { status: "running" });
-    await runPipeline(jobId, item.id, input);
+    await runPipeline(jobId, itemId, input);
   }).catch((err) => {
     console.error("[psos] import pipeline crashed:", err);
     updateJob(jobId, { status: "failed", error: err instanceof Error ? err.message : String(err) });
   });
+}
 
+/**
+ * Retry a failed import from the originals already on disk. The pipeline
+ * regenerates every derived image and re-applies AI inference (provenance
+ * still protects any fields the user edited meanwhile). Existing image rows
+ * are cleared first so stages re-create them instead of duplicating.
+ */
+export function retryImport(jobId: string): ImportJob {
+  const job = getImportJob(jobId);
+  if (job.status !== "failed") {
+    throw badRequest(`Only failed imports can be retried (this one is ${job.status})`);
+  }
+  const db = getDb();
+  const images = db
+    .select()
+    .from(schema.itemImages)
+    .where(eq(schema.itemImages.itemId, job.itemId))
+    .all();
+  const byRole = (role: string) => images.find((i) => i.role === role);
+  const front = byRole("front");
+  if (!front) {
+    throw badRequest("No saved front photo — the original upload never landed; import it again instead.");
+  }
+  const frontAbs = resolveImagePath(front.path);
+  if (!fs.existsSync(frontAbs)) {
+    throw badRequest("Saved front photo is missing from disk — import it again instead.");
+  }
+  const back = byRole("back");
+  const backAbs = back ? resolveImagePath(back.path) : null;
+
+  const input: StartImportInput = {
+    front: fs.readFileSync(frontAbs),
+    back: backAbs && fs.existsSync(backAbs) ? fs.readFileSync(backAbs) : null,
+  };
+
+  // Clear derived rows; the pipeline re-inserts everything (originals included,
+  // from the same bytes just read back).
+  db.delete(schema.itemImages).where(eq(schema.itemImages.itemId, job.itemId)).run();
+  updateJob(jobId, { stages: initialStages(), status: "queued", error: null });
+  logActivity("user", "import.retried", { type: "import_job", id: jobId });
+  enqueue(jobId, job.itemId, input);
   return getImportJob(jobId);
 }
 
@@ -216,7 +272,7 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
     frontBuf = front.buffer;
     frontPath = path.join(dir, "front.jpg");
     await saveBuffer(frontPath, front.buffer);
-    addImageRow(itemId, "front", frontPath, front.buffer, front.width, front.height);
+    addImageRow(itemId, "front", frontPath, front.buffer, front.width, front.height, await dhash(front.buffer));
 
     if (input.back && input.back.length > 0) {
       const back = await normalizeUpload(input.back);

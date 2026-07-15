@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "@/lib/api";
@@ -33,6 +34,13 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
   const { data: wearData } = useQuery({
     queryKey: ["wear", id],
     queryFn: () => apiGet<{ events: WearEvent[] }>(`/api/wear?itemId=${id}`),
+  });
+  const { data: dupes } = useQuery({
+    queryKey: ["duplicates", id],
+    queryFn: () =>
+      apiGet<{ exact: Item[]; similar: Array<{ item: Item; distance: number }> }>(
+        `/api/items/${id}/duplicates`,
+      ),
   });
 
   const item = data?.item;
@@ -113,6 +121,24 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
       <PageTitle sub={item.state === "draft" ? "Draft — review and confirm" : undefined}>
         {item.name || "Untitled"}
       </PageTitle>
+
+      {dupes && (dupes.exact.length > 0 || dupes.similar.length > 0) ? (
+        <div className="mb-6 max-w-2xl border border-danger/40 bg-danger/5 p-3 text-xs">
+          <span className="uppercase tracking-[0.2em] text-danger">possible duplicate</span>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-muted">
+            {dupes.exact.map((d) => (
+              <Link key={d.id} href={`/items/${d.id}`} className="underline hover:text-fg">
+                {d.name || "Untitled"} — identical photo
+              </Link>
+            ))}
+            {dupes.similar.map((s) => (
+              <Link key={s.item.id} href={`/items/${s.item.id}`} className="underline hover:text-fg">
+                {s.item.name || "Untitled"} — very similar photo
+              </Link>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid gap-10 lg:grid-cols-[minmax(280px,420px)_1fr]">
         <div className="flex flex-col gap-4">

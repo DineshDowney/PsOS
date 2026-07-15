@@ -164,8 +164,9 @@ Two problems were found on 2026-07-15 and both are solved (see
 
 Image outcome per item: `front`/`back` originals (disk only, never shown in the
 UI), `front_cropped`/`back_cropped` (item page), `transparent_front` (when QA
-passes), `thumbnail` = cutout > crop > full frame, flattened on the app
-background. `scripts/backfill-images.ts` retrofits all of this onto items
+passes), `thumbnail` = cutout > crop > full frame. Cutout thumbnails are
+**alpha PNGs** (no baked background — the garment floats on whatever the page
+paints); crop/full-frame fallbacks are JPEGs flattened on the app background. `scripts/backfill-images.ts` retrofits all of this onto items
 imported earlier (boxes from `ai_raw` or a box-only AI call; never touches
 metadata). `PSOS_DISABLE_BG_REMOVAL=1` now just skips the cutout step.
 
@@ -195,14 +196,34 @@ pick one home for real data. AI (chat + import extraction) is **not active on th
 VM** until Claude credentials are set up there (open decision — the app works
 minus AI; imports would save photos but produce blank metadata).
 
-## Known gaps (tracked for Phase 3)
+## Retry
 
-- Bulk upload (multi-item, front/back pairing) — the core missing piece for
-  photographing the whole wardrobe.
-- Needs-review items are not visible inside the Wardrobe screen (Import screen
-  only). Confidence values not yet surfaced in the review UI.
-- No duplicate detection (sha256 exact + perceptual candidates, review-gated).
-- No retry button for failed imports (consciously cut in Phase 2; re-import is
-  the workaround).
-- Live verification of the bbox crop on a fresh import + backfill of the 11
-  existing items (code ready; interrupted by tooling outage).
+`POST /api/imports/[id]/retry` (UI: Retry button on failed jobs). Re-runs the
+whole pipeline from the originals already on disk — derived image rows are
+cleared first, provenance still protects user-edited fields. Only `failed`
+jobs qualify; if the front photo never landed, the answer is re-upload.
+
+## Duplicate detection (flag-only)
+
+`GET /api/items/[id]/duplicates` compares FRONT photos of non-archived items:
+identical sha256 = "identical photo"; perceptual dHash
+(`imaging/phash.ts`, 64-bit, Hamming ≤ 10) = "very similar photo". The item
+page shows a warning strip linking to suspects. Nothing is ever blocked,
+merged, or deleted automatically. Hashes are computed at import
+(`save` stage); `scripts/backfill-phash.ts` covers pre-existing items.
+
+## Review visibility
+
+Draft items appear at the top of the Wardrobe screen ("Needs review · N")
+as well as on the Import screen, and are editable/confirmable immediately.
+Per product decision, per-field confidence values are stored in `ai_raw` but
+not surfaced in the UI.
+
+## Known gaps / deliberate cuts
+
+- Bulk upload UI — deliberately cut (2026-07-16): the queue already processes
+  any backlog unattended; uploads stay one-at-a-time.
+- Category taxonomy wobble (e.g. underwear → "accessory" vs "bottom") — needs
+  a vocabulary pass someday.
+- VM is behind: needs `git pull`, bg-removal flag removed from `psos.service`,
+  Claude login, and a fresh `data/` sync (parked for Phase 3).

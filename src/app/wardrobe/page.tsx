@@ -22,12 +22,30 @@ export default function WardrobePage() {
     queryKey: ["items", params.toString()],
     queryFn: () => apiGet<{ items: Item[] }>(`/api/items?${params}`),
   });
+  const { data: draftData } = useQuery({
+    queryKey: ["items", "drafts"],
+    queryFn: () => apiGet<{ items: Item[] }>(`/api/items?state=draft`),
+  });
 
   const items = data?.items ?? [];
+  const drafts = draftData?.items ?? [];
 
   return (
     <div>
       <PageTitle sub={`${items.length} pieces`}>Wardrobe</PageTitle>
+
+      {drafts.length > 0 ? (
+        <div className="mb-10">
+          <h2 className="mb-4 text-[10px] uppercase tracking-[0.25em] text-accent">
+            Needs review · {drafts.length}
+          </h2>
+          <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            {drafts.map((item) => (
+              <ItemCard key={item.id} item={item} />
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="mb-8 flex flex-wrap gap-3">
         <input

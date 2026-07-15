@@ -3,6 +3,18 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-16 — Import workflow completed: retry, review-gated dedup, drafts in Wardrobe
+Retry (`POST /api/imports/[id]/retry`) re-runs the pipeline from on-disk originals — chosen
+over resumable per-stage retry for simplicity; every stage is idempotent and the whole run
+costs ~30 s. Duplicate detection is deliberately flag-only (per the data-quality philosophy
+and the researched skill's "never auto-merge" rule): sha256 for identical files + 64-bit
+dHash (`item_images.phash`, Hamming ≤ 10) for same-garment-different-photo; verified live
+when a crash-recovered upload turned out to be a second kurta photo and was flagged against
+the original. Draft items now render in a "Needs review" strip on the Wardrobe screen;
+per-field confidence stays in `ai_raw` only (product call: don't surface it). Cutout
+thumbnails switched to alpha PNGs and tiles lost their borders/backgrounds so garments merge
+with the page black at any theme.
+
 ## 2026-07-15 (later) — Cutouts shipped: crop → child-process imgly → deterministic QA gate
 Follow-up to the entry below: imgly turned out fine when fed a PRE-CROPPED garment image and
 run in its own child process (`scripts/bg-worker.mjs` — no sharp in that process, so the

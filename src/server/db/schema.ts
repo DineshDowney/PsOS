@@ -97,6 +97,8 @@ export const itemImages = sqliteTable(
     width: integer("width"),
     height: integer("height"),
     sha256: text("sha256"),
+    /** 64-bit dHash (hex) of the image, for near-duplicate detection; front photos only */
+    phash: text("phash"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [index("item_images_item_idx").on(t.itemId)],

@@ -156,7 +156,22 @@ export default function ImportPage() {
                       </Button>
                     </>
                   ) : job.status === "failed" ? (
-                    <span className="text-xs uppercase tracking-[0.2em] text-danger">failed</span>
+                    <>
+                      <span className="text-xs uppercase tracking-[0.2em] text-danger">failed</span>
+                      <Button
+                        onClick={async () => {
+                          try {
+                            await apiSend(`/api/imports/${job.id}/retry`, "POST");
+                            toast("info", "Retrying from saved photos");
+                          } catch (e) {
+                            toast("error", e instanceof Error ? e.message : "Retry failed");
+                          }
+                          qc.invalidateQueries({ queryKey: ["imports"] });
+                        }}
+                      >
+                        Retry
+                      </Button>
+                    </>
                   ) : job.status === "queued" ? (
                     <span className="text-xs uppercase tracking-[0.2em] text-muted">queued</span>
                   ) : (
