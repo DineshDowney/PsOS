@@ -82,7 +82,15 @@ export const itemImages = sqliteTable(
       .notNull()
       .references(() => items.id, { onDelete: "cascade" }),
     role: text("role", {
-      enum: ["front", "back", "transparent_front", "transparent_back", "thumbnail"],
+      enum: [
+        "front",
+        "back",
+        "front_cropped",
+        "back_cropped",
+        "transparent_front",
+        "transparent_back",
+        "thumbnail",
+      ],
     }).notNull(),
     /** path relative to the data/images root */
     path: text("path").notNull(),

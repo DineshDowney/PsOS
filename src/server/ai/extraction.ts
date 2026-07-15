@@ -57,6 +57,7 @@ const extractionSchema = z.object({
   tags: z.array(z.string()).catch([]),
   confidence: z.record(z.string(), z.number().min(0).max(1)).catch({}),
   bbox: bboxSchema,
+  bbox_back: bboxSchema,
 });
 
 function buildPrompt(imagePaths: string[], dominant: DominantColor[]): string {
@@ -90,7 +91,8 @@ Return ONLY a JSON object (no prose before or after) with exactly these keys:
   "seasons": ${JSON.stringify(SEASONS)} (multi-select, [] if unclear),
   "tags": string[],                  // 3-8 lowercase style tags, e.g. ["minimal","streetwear","layering"]
   "confidence": { [field]: number }, // 0-1 per field you filled
-  "bbox": { "x": number, "y": number, "w": number, "h": number } | null  // ${BOX_INSTRUCTION}
+  "bbox": { "x": number, "y": number, "w": number, "h": number } | null,  // ${BOX_INSTRUCTION}
+  "bbox_back": { same shape } | null  // same, but for the BACK photo; null when no back photo given
 }
 
 Rules:
@@ -137,6 +139,7 @@ export async function extractItemMetadata(input: ExtractionInput): Promise<AiInf
     confidence: raw.confidence,
     tags: raw.tags.map((t) => t.toLowerCase().trim()).filter(Boolean),
     bbox: raw.bbox as BBox | null,
+    bboxBack: raw.bbox_back as BBox | null,
     model: model ?? "claude-code-default",
     extractedAt: nowIso(),
   };

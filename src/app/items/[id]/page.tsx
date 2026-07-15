@@ -116,8 +116,13 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
 
       <div className="grid gap-10 lg:grid-cols-[minmax(280px,420px)_1fr]">
         <div className="flex flex-col gap-4">
-          {item.images
-            .filter((i) => i.role !== "thumbnail")
+          {/* Cropped garment shots only — raw photos (tripod, floor…) stay on disk, never shown */}
+          {(["front", "back"] as const)
+            .map((side) => {
+              const cropped = item.images.find((i) => i.role === `${side}_cropped`);
+              return cropped ?? item.images.find((i) => i.role === side);
+            })
+            .filter((img): img is NonNullable<typeof img> => Boolean(img))
             .map((img) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img

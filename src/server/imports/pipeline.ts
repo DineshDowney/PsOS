@@ -11,6 +11,7 @@ import { itemImageDir, relativeImagePath, saveBuffer, sha256Of } from "@/server/
 import { normalizeUpload, makeThumbnail, cropToBox } from "@/server/imaging/thumbnails";
 import { dominantColors, type DominantColor } from "@/server/imaging/dominant-colors";
 import { removeBackground } from "@/server/imaging/background-removal";
+import { cutoutQa } from "@/server/imaging/cutout-qa";
 import { extractItemMetadata } from "@/server/ai/extraction";
 import type { BBox, ImageRole, ImportJob, ImportStage, StageInfo } from "@/shared/types";
 
@@ -209,6 +210,7 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
   let frontPath: string;
   let backPath: string | null = null;
   let frontBuf: Buffer;
+  let backBuf: Buffer | null = null;
   try {
     const front = await normalizeUpload(input.front);
     frontBuf = front.buffer;
@@ -218,6 +220,7 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
 
     if (input.back && input.back.length > 0) {
       const back = await normalizeUpload(input.back);
+      backBuf = back.buffer;
       backPath = path.join(dir, "back.jpg");
       await saveBuffer(backPath, back.buffer);
       addImageRow(itemId, "back", backPath, back.buffer, back.width, back.height);
@@ -229,31 +232,11 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
     return;
   }
 
-  // 2. background removal (optional)
-  mark("background_removal", { status: "running" });
-  let cutout: Buffer | null = null;
-  try {
-    const result = await removeBackground(frontBuf);
-    if (result) {
-      cutout = result.png;
-      const cutoutPath = path.join(dir, "transparent_front.png");
-      await saveBuffer(cutoutPath, cutout);
-      addImageRow(itemId, "transparent_front", cutoutPath, cutout);
-      mark("background_removal", { status: "done" });
-    } else {
-      mark("background_removal", {
-        status: "failed",
-        error: "Background removal unavailable — kept the original photo",
-      });
-    }
-  } catch (err) {
-    fail("background_removal", err);
-  }
-
-  // 3. thumbnail (from cutout when available)
+  // 2. provisional full-frame thumbnail — replaced by the garment crop/cutout
+  // after the AI locates the garment. The grid shows something meanwhile.
   mark("thumbnail", { status: "running" });
   try {
-    const thumb = await makeThumbnail(cutout ?? frontBuf);
+    const thumb = await makeThumbnail(frontBuf);
     const thumbPath = path.join(dir, "thumbnail.jpg");
     await saveBuffer(thumbPath, thumb.buffer);
     addImageRow(itemId, "thumbnail", thumbPath, thumb.buffer, thumb.width, thumb.height);
@@ -262,44 +245,96 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
     fail("thumbnail", err);
   }
 
-  // 4. deterministic color extraction
+  // 3. deterministic color extraction
   mark("colors", { status: "running" });
   let dominant: DominantColor[] = [];
   try {
-    dominant = await dominantColors(cutout ?? frontBuf);
+    dominant = await dominantColors(frontBuf);
     mark("colors", { status: "done" });
   } catch (err) {
     fail("colors", err);
   }
 
-  // 5. AI metadata (writes only AI-owned fields via provenance)
+  // 4. AI metadata + garment boxes (writes only AI-owned fields via provenance)
   mark("ai_metadata", { status: "running" });
-  let inferredBox: BBox | null = null;
+  let boxFront: BBox | null = null;
+  let boxBack: BBox | null = null;
   try {
     const inference = await extractItemMetadata({
       imagePaths: [frontPath, ...(backPath ? [backPath] : [])],
       dominant,
     });
     applyInferenceToItem(itemId, inference);
-    inferredBox = inference.bbox ?? null;
+    boxFront = inference.bbox ?? null;
+    boxBack = inference.bboxBack ?? null;
     mark("ai_metadata", { status: "done" });
   } catch (err) {
     fail("ai_metadata", err);
   }
 
-  // 6. Upgrade the thumbnail to a tight garment crop using the AI's box.
-  // Non-fatal: on any failure the uncropped thumbnail from stage 3 remains.
-  if (inferredBox) {
-    try {
-      const cropped = await cropToBox(frontBuf, inferredBox);
-      if (cropped) {
-        const thumb = await makeThumbnail(cropped);
-        const thumbPath = path.join(dir, "thumbnail.jpg");
-        await saveBuffer(thumbPath, thumb.buffer);
-        updateThumbnailRow(itemId, thumb.buffer, thumb.width, thumb.height);
+  // 5. tight garment crops for the item page (raw photos stay on disk only)
+  let cropFront: Buffer | null = null;
+  try {
+    if (boxFront) cropFront = await cropToBox(frontBuf, boxFront);
+    if (cropFront) {
+      const p = path.join(dir, "front_cropped.jpg");
+      await saveBuffer(p, cropFront);
+      addImageRow(itemId, "front_cropped", p, cropFront);
+    }
+    if (backBuf && boxBack) {
+      const cropBack = await cropToBox(backBuf, boxBack);
+      if (cropBack) {
+        const p = path.join(dir, "back_cropped.jpg");
+        await saveBuffer(p, cropBack);
+        addImageRow(itemId, "back_cropped", p, cropBack);
       }
+    }
+  } catch (err) {
+    console.error("[psos] garment crop failed (item page falls back to originals):", err);
+  }
+
+  // 6. background removal on the CROP (imgly output is only good pre-cropped),
+  // gated by cutoutQa — a smeared matte keeps the crop instead. The catalog
+  // thumbnail becomes cutout > crop > full frame, best available.
+  mark("background_removal", { status: "running" });
+  let bestThumbSource: Buffer | null = cropFront;
+  try {
+    const result = cropFront ? await removeBackground(cropFront) : null;
+    if (result) {
+      const qa = await cutoutQa(result.png);
+      if (qa.ok) {
+        const cutoutPath = path.join(dir, "transparent_front.png");
+        await saveBuffer(cutoutPath, result.png);
+        addImageRow(itemId, "transparent_front", cutoutPath, result.png);
+        bestThumbSource = result.png;
+        mark("background_removal", { status: "done" });
+      } else {
+        mark("background_removal", {
+          status: "failed",
+          error: `Cutout rejected by quality check (${qa.reason}) — kept the crop`,
+        });
+      }
+    } else {
+      mark("background_removal", {
+        status: "failed",
+        error: cropFront
+          ? "Background removal unavailable — kept the cropped photo"
+          : "No garment crop available — kept the original photo",
+      });
+    }
+  } catch (err) {
+    fail("background_removal", err);
+  }
+
+  // 7. final thumbnail from the best source available
+  if (bestThumbSource) {
+    try {
+      const thumb = await makeThumbnail(bestThumbSource);
+      const thumbPath = path.join(dir, "thumbnail.jpg");
+      await saveBuffer(thumbPath, thumb.buffer);
+      updateThumbnailRow(itemId, thumb.buffer, thumb.width, thumb.height);
     } catch (err) {
-      console.error("[psos] thumbnail crop failed (kept full-frame thumbnail):", err);
+      console.error("[psos] final thumbnail failed (kept provisional):", err);
     }
   }
 

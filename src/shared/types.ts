@@ -32,6 +32,8 @@ export type FieldSource = "ai" | "user";
 export type ImageRole =
   | "front"
   | "back"
+  | "front_cropped"
+  | "back_cropped"
   | "transparent_front"
   | "transparent_back"
   | "thumbnail";
@@ -108,6 +110,8 @@ export interface AiInference {
   tags: string[];
   /** garment box in the front photo, for tight thumbnail cropping; null if unlocatable */
   bbox?: BBox | null;
+  /** garment box in the back photo (when one was provided); null if unlocatable */
+  bboxBack?: BBox | null;
   model: string;
   extractedAt: string;
 }
