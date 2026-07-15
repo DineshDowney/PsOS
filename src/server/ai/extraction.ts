@@ -8,9 +8,27 @@ import {
   FORMALITIES,
   SEASONS,
   type AiInference,
+  type BBox,
   type EditableFields,
 } from "@/shared/types";
 import type { DominantColor } from "@/server/imaging/dominant-colors";
+
+/** Shared instruction for locating the garment box — one wording, two callers. */
+const BOX_INSTRUCTION =
+  'A tight box around ONLY the garment in the FRONT photo, as fractions 0..1 of ' +
+  'image width/height ("x","y" = top-left corner). EXCLUDE any tripod, monopod, ' +
+  'stand, pole, feet, hands, hanger, and background. Use null if you cannot locate ' +
+  "it confidently.";
+
+const bboxSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+    w: z.number(),
+    h: z.number(),
+  })
+  .nullable()
+  .catch(null);
 
 /**
  * Vision metadata extraction for the import pipeline.
@@ -38,6 +56,7 @@ const extractionSchema = z.object({
   seasons: z.array(z.enum(SEASONS)).catch([]),
   tags: z.array(z.string()).catch([]),
   confidence: z.record(z.string(), z.number().min(0).max(1)).catch({}),
+  bbox: bboxSchema,
 });
 
 function buildPrompt(imagePaths: string[], dominant: DominantColor[]): string {
@@ -70,13 +89,15 @@ Return ONLY a JSON object (no prose before or after) with exactly these keys:
   "formality": ${JSON.stringify(FORMALITIES)} | null,
   "seasons": ${JSON.stringify(SEASONS)} (multi-select, [] if unclear),
   "tags": string[],                  // 3-8 lowercase style tags, e.g. ["minimal","streetwear","layering"]
-  "confidence": { [field]: number }  // 0-1 per field you filled
+  "confidence": { [field]: number }, // 0-1 per field you filled
+  "bbox": { "x": number, "y": number, "w": number, "h": number } | null  // ${BOX_INSTRUCTION}
 }
 
 Rules:
 - Correctness over completeness: use null when not reasonably inferable. Never guess brand or material.
 - Judge colors from the garment itself, ignoring background and skin.
-- "category" must be one of the allowed values ("full_body" = dresses, jumpsuits, overalls).`;
+- "category" must be one of the allowed values ("full_body" = dresses, jumpsuits, overalls).
+- bbox: ${BOX_INSTRUCTION}`;
 }
 
 export interface ExtractionInput {
@@ -115,7 +136,29 @@ export async function extractItemMetadata(input: ExtractionInput): Promise<AiInf
     fields,
     confidence: raw.confidence,
     tags: raw.tags.map((t) => t.toLowerCase().trim()).filter(Boolean),
+    bbox: raw.bbox as BBox | null,
     model: model ?? "claude-code-default",
     extractedAt: nowIso(),
   };
+}
+
+/**
+ * Lightweight garment-box-only extraction — for backfilling thumbnails on
+ * items imported before bbox existed. Cheaper/faster than a full re-extract
+ * and it never touches metadata, so reviewed fields are untouched.
+ */
+export async function extractBoundingBox(imagePath: string): Promise<BBox | null> {
+  const model = getSetting("ai.extractionModel") ?? undefined;
+  const prompt = `Read this clothing photo: ${imagePath}
+Return ONLY a JSON object (no prose) of the form:
+{ "bbox": { "x": number, "y": number, "w": number, "h": number } | null }
+${BOX_INSTRUCTION}`;
+  const text = await runAgentToResult({
+    prompt,
+    allowedTools: ["Read"],
+    maxTurns: 6,
+    model,
+  });
+  const parsed = z.object({ bbox: bboxSchema }).parse(extractJsonObject(text));
+  return parsed.bbox as BBox | null;
 }

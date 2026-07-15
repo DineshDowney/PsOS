@@ -1,6 +1,8 @@
 # Architecture
 
-Local-first, single-user Next.js 15 app. One process, one folder of state (`data/`), no cloud.
+Local-first, single-user Next.js 15 app. One process, one folder of state (`data/`).
+Since 2026-07-15 a production copy runs on GCP VM `psos-1` (systemd service, IP-allowlisted
+port 3000) — see the deployment notes in `docs/IMPORT_PIPELINE.md` and `docs/DECISIONS.md`.
 
 ## Layout
 
@@ -49,6 +51,10 @@ cross-check) → AI metadata via Agent SDK `Read`-tool vision (zod-validated JSO
 per field, null-over-guess) → `applyInferenceToItem` → status `ready_for_review`. The UI
 polls the job, then the user reviews/edits (edits flip provenance to `user`) and confirms
 (`state: draft → active`).
+
+After AI metadata succeeds, the thumbnail is re-cropped tight to the garment using the
+bounding box the same AI call returns (`cropToBox`; non-fatal, falls back to full-frame).
+Full pipeline documentation: `docs/IMPORT_PIPELINE.md`.
 
 Reliability notes (learned from real-photo testing, 2026-07-15):
 - **Background removal is currently disabled** (`PSOS_DISABLE_BG_REMOVAL=1`): imgly's ONNX

@@ -8,11 +8,11 @@ import { createLimiter } from "@/server/lib/limiter";
 import { logActivity } from "@/server/services/activity";
 import { createDraftItem, applyInferenceToItem, getItem } from "@/server/services/catalog";
 import { itemImageDir, relativeImagePath, saveBuffer, sha256Of } from "@/server/imaging/storage";
-import { normalizeUpload, makeThumbnail } from "@/server/imaging/thumbnails";
+import { normalizeUpload, makeThumbnail, cropToBox } from "@/server/imaging/thumbnails";
 import { dominantColors, type DominantColor } from "@/server/imaging/dominant-colors";
 import { removeBackground } from "@/server/imaging/background-removal";
 import { extractItemMetadata } from "@/server/ai/extraction";
-import type { ImageRole, ImportJob, ImportStage, StageInfo } from "@/shared/types";
+import type { BBox, ImageRole, ImportJob, ImportStage, StageInfo } from "@/shared/types";
 
 /**
  * Import pipeline: front(+back) photo → draft item ready for review.
@@ -69,6 +69,15 @@ function addImageRow(itemId: string, role: ImageRole, absPath: string, buffer: B
       sha256: sha256Of(buffer),
       createdAt: nowIso(),
     })
+    .run();
+}
+
+/** Point the item's thumbnail row at freshly-written bytes (same file path). */
+function updateThumbnailRow(itemId: string, buffer: Buffer, width: number, height: number): void {
+  getDb()
+    .update(schema.itemImages)
+    .set({ width, height, sha256: sha256Of(buffer) })
+    .where(and(eq(schema.itemImages.itemId, itemId), eq(schema.itemImages.role, "thumbnail")))
     .run();
 }
 
@@ -265,15 +274,33 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
 
   // 5. AI metadata (writes only AI-owned fields via provenance)
   mark("ai_metadata", { status: "running" });
+  let inferredBox: BBox | null = null;
   try {
     const inference = await extractItemMetadata({
       imagePaths: [frontPath, ...(backPath ? [backPath] : [])],
       dominant,
     });
     applyInferenceToItem(itemId, inference);
+    inferredBox = inference.bbox ?? null;
     mark("ai_metadata", { status: "done" });
   } catch (err) {
     fail("ai_metadata", err);
+  }
+
+  // 6. Upgrade the thumbnail to a tight garment crop using the AI's box.
+  // Non-fatal: on any failure the uncropped thumbnail from stage 3 remains.
+  if (inferredBox) {
+    try {
+      const cropped = await cropToBox(frontBuf, inferredBox);
+      if (cropped) {
+        const thumb = await makeThumbnail(cropped);
+        const thumbPath = path.join(dir, "thumbnail.jpg");
+        await saveBuffer(thumbPath, thumb.buffer);
+        updateThumbnailRow(itemId, thumb.buffer, thumb.width, thumb.height);
+      }
+    } catch (err) {
+      console.error("[psos] thumbnail crop failed (kept full-frame thumbnail):", err);
+    }
   }
 
   updateJob(jobId, { status: "ready_for_review", error: null });

@@ -1,0 +1,203 @@
+# Import Pipeline
+
+The complete path from a garment photo to a reviewed wardrobe item. This is the
+foundation of the app — everything downstream (outfits, chat, analytics) consumes
+the data this pipeline produces. A new developer should be able to understand the
+whole import system from this document alone.
+
+Last updated: 2026-07-15 (Phase 2). Keep this current whenever the pipeline changes.
+
+## The flow at a glance
+
+```
+phone/browser                    server (Next.js route handlers → src/server/**)
+─────────────                    ────────────────────────────────────────────────
+POST /api/imports  ──────────▶   create draft item (state: draft)
+  front (file, required)         create import_jobs row (status: queued)
+  back  (file, optional)         enqueue pipeline run          ──▶ HTTP 201 (job)
+                                 ────────── bounded queue ──────────
+                                 max N concurrent (PSOS_IMPORT_CONCURRENCY, default 2)
+                                 job status: queued → running
+                                 1. save          normalize + store originals   [fatal on failure]
+                                 2. background_removal                          [disabled, see below]
+                                 3. thumbnail     640px catalog tile
+                                 4. colors        deterministic dominant colors
+                                 5. ai_metadata   Claude vision → fields + garment bbox
+                                    └─ thumbnail re-cropped tight to the bbox
+                                 job status: ready_for_review
+GET /api/imports (poll) ◀─────   per-stage progress in import_jobs.stages
+user reviews at /items/[id]      edits flip field provenance to "user"
+POST /api/items/[id]/confirm ─▶  item state: draft → active  (appears in Wardrobe)
+```
+
+## Files that own each part
+
+| Concern | File |
+|---|---|
+| Upload API (multipart) | `src/app/api/imports/route.ts` |
+| Job polling API | `src/app/api/imports/[id]/route.ts` |
+| Pipeline, queue, crash recovery | `src/server/imports/pipeline.ts` |
+| Concurrency limiter | `src/server/lib/limiter.ts` |
+| Image storage layout | `src/server/imaging/storage.ts` |
+| Normalize / thumbnail / bbox crop | `src/server/imaging/thumbnails.ts` |
+| Dominant colors | `src/server/imaging/dominant-colors.ts` |
+| Background removal (disabled) | `src/server/imaging/background-removal.ts` |
+| AI extraction (metadata + bbox) | `src/server/ai/extraction.ts` |
+| Agent SDK wrapper (auth, allowlist) | `src/server/ai/agent.ts` |
+| Provenance rules (pure) | `src/server/services/provenance.ts` |
+| Item writes (user vs AI) | `src/server/services/catalog.ts` |
+| Import screen UI | `src/app/import/page.tsx` |
+| Review/edit UI | `src/app/items/[id]/page.tsx` |
+| Thumbnail backfill script | `scripts/backfill-thumbnails.ts` |
+
+## Upload contract
+
+`POST /api/imports` — `multipart/form-data` with `front` (required image file) and
+`back` (optional image file). One request = one clothing item. Returns `201` with
+the job (status `queued`) immediately; processing is asynchronous. Bulk upload
+does not exist yet (Phase 3).
+
+## The queue
+
+Uploads do not run immediately — `startImport()` inserts the job as `queued` and
+hands the pipeline to a FIFO limiter (`createLimiter`). At most
+`PSOS_IMPORT_CONCURRENCY` (default 2) pipelines run at once; a burst of uploads
+lines up instead of launching unbounded parallel image + AI work. The queue is
+in-process: it does not survive a server restart, which is why crash recovery
+exists (below).
+
+Job statuses: `queued → running → ready_for_review | failed`.
+
+## Stages, and what failure means per stage
+
+Stage progress is persisted per stage in `import_jobs.stages`
+(`{status: pending|running|done|failed, error?}`), so the UI can poll and a killed
+server leaves an inspectable record. Failure policy: **only `save` is fatal** —
+everything downstream degrades gracefully and records its failure reason.
+
+1. **save** — `normalizeUpload` (sharp): auto-rotate via EXIF, cap long edge at
+   2048px, re-encode JPEG q92. Written to `data/images/<itemId>/front.jpg` (+
+   `back.jpg`), one `item_images` row each with sha256. If this stage fails the
+   job is `failed` — there is nothing to review.
+2. **background_removal** — currently returns "unavailable" by design; the stage
+   shows failed with an explanatory message and the pipeline continues. See
+   "Background removal status" below.
+3. **thumbnail** — 640×640 `fit: contain` on the app background color →
+   `thumbnail.jpg`. At this point it is a full-frame thumbnail.
+4. **colors** — deterministic pixel quantization (sharp, 64px downscale, 32-step
+   RGB buckets, alpha-aware) → top-3 dominant hex colors. Not written to the item;
+   passed to the AI prompt as a cross-check for color naming.
+5. **ai_metadata** — see "AI extraction" below. On success,
+   `applyInferenceToItem` writes fields through provenance rules, then —
+   **stage 6, implicit** — if the AI returned a garment bounding box, the
+   thumbnail is regenerated cropped tight to the garment (`cropToBox` with 8%
+   padding, clamped, rejects implausibly small boxes). Crop failure is non-fatal;
+   the full-frame thumbnail stays.
+
+After stage 5 the job is `ready_for_review` **even if stages 2–5 individually
+failed** — the draft is always reviewable with originals intact; a failed AI
+stage just means a blank form.
+
+## AI extraction
+
+One Claude call per item, via the Claude Agent SDK riding the machine's Claude
+Code login (no API key — see `docs/DECISIONS.md`). The agent gets the saved photo
+paths and reads them with its `Read` tool (vision); allowlist is `["Read"]` only.
+
+- **Model**: `ai.extractionModel` setting — **pinned to `claude-sonnet-5`**.
+  Measured on real photos (2026-07-15): the unpinned default misidentified
+  garments *with confidence 1.0*; Sonnet 5 went 11-for-11 with honest confidence
+  (brand 0 when no logo visible). Do not unpin without re-validating.
+- **Latency**: ~15–23 s per item, which is ~95% of pipeline wall time. At default
+  concurrency, 100 items ≈ 30–40 minutes unattended.
+- **Contract**: model returns one JSON object — name, category, subcategory,
+  description, colors (primary/secondary/detail), pattern, fit, material, brand,
+  formality, seasons, 3–8 tags, per-field confidence 0–1, and `bbox` (normalized
+  garment box in the front photo, or null). Zod-validated with `.catch()`
+  fallbacks so a partially malformed answer degrades to nulls instead of failing
+  the import. Prompt demands **null over guessing** — brand/material only when
+  visually evident.
+- The full raw inference (including confidences and bbox) is stored forever in
+  `items.ai_raw` for audit/debug; confidence surfacing in the review UI is a
+  Phase 3 item.
+- `extractBoundingBox(imagePath)` is a lightweight box-only variant used by
+  `scripts/backfill-thumbnails.ts` to re-crop thumbnails of items imported before
+  bbox existed, without touching their (possibly reviewed) metadata.
+
+## Provenance — why AI can never overwrite your edits
+
+Every editable field carries a source (`ai` | `user`) in `items.field_sources`.
+`applyUserEdits` flips a field to `user` permanently (including clearing it);
+`applyAiInference` writes only fields whose source is `ai` or unset and reports
+what it skipped. All field writes go through `services/catalog.ts` — raw UPDATEs
+on editable fields are forbidden. Unit-tested in `provenance.test.ts`.
+
+Item lifecycle: `draft` (imported, needs review — visible on the Import screen)
+→ `active` (confirmed into the Wardrobe) → `archived` (soft-deleted; files and
+rows remain on disk).
+
+## Crash recovery
+
+The in-process queue means a crash or restart strands jobs at `queued`/`running`.
+On the first import-API touch per process, `recoverOrphanedJobs()` marks any such
+job **older than 3 minutes** as `failed` with an honest reason ("interrupted by a
+server restart — saved photos are intact"). The staleness cutoff prevents a dev
+hot-reload from killing an actively-running import. This deliberately does NOT
+live in Next's `instrumentation.ts`: its separate bundling pass pulls imgly's
+native binary into the route bundle and 500s the app (observed live 2026-07-15).
+
+## Background removal status (read before "fixing" it)
+
+Two independent problems were found on 2026-07-15, both documented in
+`docs/DECISIONS.md`:
+
+1. **Windows crash**: loading imgly's ONNX runtime into a process where
+   sharp/libvips is active aborts the whole Node process (`GLib-GObject-CRITICAL`,
+   uncatchable). Hence `PSOS_DISABLE_BG_REMOVAL=1` on the Windows dev machine.
+2. **Quality failure (the bigger one)**: on Linux (VM) it runs fine (~12–17 s per
+   image) but output on real wardrobe photos is poor — it keeps tripods/feet as
+   "foreground", and smears dark-garment-on-dark-bedsheet into semi-transparent
+   halos. Verified by eye on three representative photos.
+
+Strategy: **crop-first, transparency later.** The AI bbox crop (stage 6) delivers
+clean catalog tiles without any segmentation. True product-style transparent
+cutouts are a possible future layer (better segmentation model, isolated in a
+child process, likely on the VM) — decide after living with crops.
+
+## Storage & data layout
+
+Everything lives under `data/` (gitignored): `stylist.db` (SQLite, WAL) +
+`images/<itemId>/<role>.<ext>` where role ∈ front, back, transparent_front,
+thumbnail. DB rows store paths relative to `data/images`; `/api/images/[...path]`
+serves them traversal-safe. Originals are never deleted or overwritten by the
+pipeline. sha256 is stored per image (future duplicate detection). Single-folder
+backup: zip `data/` (Settings → Export).
+
+## Environment flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `PSOS_DISABLE_BG_REMOVAL` | unset | `1` = skip background removal stage (required on Windows) |
+| `PSOS_IMPORT_CONCURRENCY` | `2` | max simultaneous import pipelines |
+
+## Deployment note
+
+Production instance: GCP VM `psos-1` (e2-small, asia-south1-a), app as systemd
+service `psos` (`npm start`, `NODE_ENV=production`, bg removal disabled), port
+3000 open only to Dinesh's IP (firewall rule `psos-app`). `data/` was copied from
+the dev machine on 2026-07-15 — **the VM copy and the laptop copy do not sync**;
+pick one home for real data. AI (chat + import extraction) is **not active on the
+VM** until Claude credentials are set up there (open decision — the app works
+minus AI; imports would save photos but produce blank metadata).
+
+## Known gaps (tracked for Phase 3)
+
+- Bulk upload (multi-item, front/back pairing) — the core missing piece for
+  photographing the whole wardrobe.
+- Needs-review items are not visible inside the Wardrobe screen (Import screen
+  only). Confidence values not yet surfaced in the review UI.
+- No duplicate detection (sha256 exact + perceptual candidates, review-gated).
+- No retry button for failed imports (consciously cut in Phase 2; re-import is
+  the workaround).
+- Live verification of the bbox crop on a fresh import + backfill of the 11
+  existing items (code ready; interrupted by tooling outage).

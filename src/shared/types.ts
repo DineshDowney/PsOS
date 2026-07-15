@@ -90,10 +90,24 @@ export interface AiFieldConfidence {
   confidence: number; // 0..1
 }
 
+/**
+ * Normalized garment bounding box in the front photo — fractions 0..1 of image
+ * width/height, (x, y) = top-left corner. Used to crop the catalog thumbnail
+ * tight to the garment (excludes tripod, feet, background). Not user-editable.
+ */
+export interface BBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface AiInference {
   fields: Partial<EditableFields>;
   confidence: Record<string, number>;
   tags: string[];
+  /** garment box in the front photo, for tight thumbnail cropping; null if unlocatable */
+  bbox?: BBox | null;
   model: string;
   extractedAt: string;
 }

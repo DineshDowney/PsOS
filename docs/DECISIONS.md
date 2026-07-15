@@ -3,6 +3,32 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-15 — Photo quality: crop-first via AI bounding box; imgly rejected on quality
+imgly runs fine on Linux (~12–17 s/image; the crash is Windows-specific) but its OUTPUT on
+real wardrobe photos is poor: monopod/feet kept as "foreground", dark garments smeared into
+the dark bedsheet as translucent halos. Verified by eye on three representative cutouts.
+Decision: don't harden a tool that produces bad output. Instead the metadata extraction call
+now also returns a normalized garment bounding box (`bbox`), and the pipeline re-crops the
+thumbnail tight to the garment (`cropToBox`, 8% padding, implausible boxes rejected,
+non-fatal). `scripts/backfill-thumbnails.ts` re-crops items imported before bbox existed
+using a box-only AI call that never touches metadata. True transparent cutouts remain a
+possible later layer (better segmentation, child-process isolated, likely on the VM) —
+evaluate after living with crops. Photography guidance that costs nothing: keep the
+monopod/feet out of frame.
+
+## 2026-07-15 — Deployed to GCP: e2-small VM, IP-allowlist gate, systemd
+psos runs on VM `psos-1` (e2-small, asia-south1-a, Debian 12, 20 GB) as systemd service
+`psos`; port 3000 is open only to Dinesh's home IP (firewall rule `psos-app`); SSH via gcloud
+keys. Dinesh chose IP allowlist over Tailscale knowing mobile-data access breaks (home Wi-Fi
+covers the current use case) and "harden first, deploy, then the rest of Phase 2". `data/`
+was copied once on deploy day — no sync exists; the VM copy is intended to become canonical.
+AI on the VM is OFF: copying the Claude Code OAuth token was blocked by the permission system
+as a credential-exfiltration risk and deliberately left as Dinesh's explicit decision
+(options: copy token / log in on VM himself / keep AI laptop-only). A stray half-configured
+`psos-server` VM (created from the console at 14:25 IST, before any CLI work) was confirmed
+his and deleted. Prod build note: never run `npm run build` while a server is serving from
+the same `.next` — it corrupts the running instance (hit twice today).
+
 ## 2026-07-15 — Background removal disabled pending process isolation
 First real import hard-crashed the entire dev server, twice, reproducibly: loading
 `@imgly/background-removal-node`'s ONNX runtime into a process where sharp/libvips is active
