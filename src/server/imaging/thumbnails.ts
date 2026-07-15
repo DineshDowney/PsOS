@@ -63,13 +63,22 @@ export async function normalizeUpload(input: Buffer): Promise<ProcessedImage> {
 }
 
 /**
- * Catalog thumbnail: 640px square on the app's background color so the grid
- * looks uniform. Prefers the transparent cutout when available.
+ * Catalog thumbnail, 640px square. With `alpha: true` (cutout input) the
+ * transparency is preserved as PNG so the garment floats on whatever the UI
+ * paints behind it — no baked background to clash with the page color.
+ * Otherwise (crop/full-frame input) flatten to JPEG on the app background.
  */
 export async function makeThumbnail(
   input: Buffer,
-  opts: { background?: string } = {},
+  opts: { background?: string; alpha?: boolean } = {},
 ): Promise<ProcessedImage> {
+  if (opts.alpha) {
+    const buffer = await sharp(input)
+      .resize(640, 640, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png()
+      .toBuffer();
+    return { buffer, width: 640, height: 640 };
+  }
   const background = opts.background ?? "#111110";
   const buffer = await sharp(input)
     .resize(640, 640, { fit: "contain", background })

@@ -73,11 +73,11 @@ function addImageRow(itemId: string, role: ImageRole, absPath: string, buffer: B
     .run();
 }
 
-/** Point the item's thumbnail row at freshly-written bytes (same file path). */
-function updateThumbnailRow(itemId: string, buffer: Buffer, width: number, height: number): void {
+/** Point the item's thumbnail row at freshly-written bytes (path may change .jpg↔.png). */
+function updateThumbnailRow(itemId: string, absPath: string, buffer: Buffer, width: number, height: number): void {
   getDb()
     .update(schema.itemImages)
-    .set({ width, height, sha256: sha256Of(buffer) })
+    .set({ path: relativeImagePath(absPath), width, height, sha256: sha256Of(buffer) })
     .where(and(eq(schema.itemImages.itemId, itemId), eq(schema.itemImages.role, "thumbnail")))
     .run();
 }
@@ -298,6 +298,7 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
   // thumbnail becomes cutout > crop > full frame, best available.
   mark("background_removal", { status: "running" });
   let bestThumbSource: Buffer | null = cropFront;
+  let thumbHasAlpha = false;
   try {
     const result = cropFront ? await removeBackground(cropFront) : null;
     if (result) {
@@ -307,6 +308,7 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
         await saveBuffer(cutoutPath, result.png);
         addImageRow(itemId, "transparent_front", cutoutPath, result.png);
         bestThumbSource = result.png;
+        thumbHasAlpha = true;
         mark("background_removal", { status: "done" });
       } else {
         mark("background_removal", {
@@ -326,13 +328,14 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
     fail("background_removal", err);
   }
 
-  // 7. final thumbnail from the best source available
+  // 7. final thumbnail from the best source available (alpha PNG for cutouts,
+  // so the grid tile has no baked background)
   if (bestThumbSource) {
     try {
-      const thumb = await makeThumbnail(bestThumbSource);
-      const thumbPath = path.join(dir, "thumbnail.jpg");
+      const thumb = await makeThumbnail(bestThumbSource, { alpha: thumbHasAlpha });
+      const thumbPath = path.join(dir, thumbHasAlpha ? "thumbnail.png" : "thumbnail.jpg");
       await saveBuffer(thumbPath, thumb.buffer);
-      updateThumbnailRow(itemId, thumb.buffer, thumb.width, thumb.height);
+      updateThumbnailRow(itemId, thumbPath, thumb.buffer, thumb.width, thumb.height);
     } catch (err) {
       console.error("[psos] final thumbnail failed (kept provisional):", err);
     }

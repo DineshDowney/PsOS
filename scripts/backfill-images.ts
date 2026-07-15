@@ -120,6 +120,7 @@ async function main() {
 
       // cutout (front crop only) + QA
       let thumbSource = cropFront;
+      let thumbAlpha = false;
       let cutoutNote = "no crop";
       if (cropFront) {
         const cutout = await removeBackground(cropFront);
@@ -130,6 +131,7 @@ async function main() {
             await saveBuffer(p, cutout.png);
             upsertImage(item.id, "transparent_front", p, cutout.png);
             thumbSource = cutout.png;
+            thumbAlpha = true;
             cutoutNote = `cutout ok (opaque ${(qa.opaqueFraction * 100).toFixed(0)}%)`;
           } else {
             cutoutNote = `cutout rejected: ${qa.reason}`;
@@ -137,17 +139,33 @@ async function main() {
         } else {
           cutoutNote = "cutout unavailable";
         }
+        // A rejected/unavailable cutout must also remove any stale cutout from
+        // an earlier run — otherwise regen jobs resurrect the bad matte.
+        if (!thumbAlpha) {
+          const stale = imageRow(item.id, "transparent_front");
+          if (stale) {
+            const staleAbs = resolveImagePath(stale.path);
+            db.delete(schema.itemImages).where(eq(schema.itemImages.id, stale.id)).run();
+            if (fs.existsSync(staleAbs)) fs.unlinkSync(staleAbs);
+            cutoutNote += " · stale cutout removed";
+          }
+        }
       }
 
-      // thumbnail from best source
+      // thumbnail from best source — alpha PNG for cutouts (no baked bg)
       if (thumbSource) {
-        const thumb = await makeThumbnail(thumbSource);
-        const p = path.join(dir, "thumbnail.jpg");
+        const thumb = await makeThumbnail(thumbSource, { alpha: thumbAlpha });
+        const p = path.join(dir, thumbAlpha ? "thumbnail.png" : "thumbnail.jpg");
         await saveBuffer(p, thumb.buffer);
         const existing = imageRow(item.id, "thumbnail");
         if (existing) {
           db.update(schema.itemImages)
-            .set({ width: thumb.width, height: thumb.height, sha256: sha256Of(thumb.buffer) })
+            .set({
+              path: relativeImagePath(p),
+              width: thumb.width,
+              height: thumb.height,
+              sha256: sha256Of(thumb.buffer),
+            })
             .where(eq(schema.itemImages.id, existing.id))
             .run();
         } else {

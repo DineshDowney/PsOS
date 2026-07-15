@@ -96,7 +96,7 @@ export function ItemCard({ item, footer }: { item: Item; footer?: React.ReactNod
     <div className="group flex flex-col">
       <Link
         href={`/items/${item.id}`}
-        className="relative block aspect-square overflow-hidden border border-line bg-surface transition-colors group-hover:border-accent/60"
+        className="relative block aspect-square overflow-hidden border border-line transition-colors group-hover:border-accent/60"
       >
         {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
