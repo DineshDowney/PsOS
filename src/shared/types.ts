@@ -113,7 +113,7 @@ export interface StageInfo {
 export interface ImportJob {
   id: string;
   itemId: string;
-  status: "running" | "ready_for_review" | "failed";
+  status: "queued" | "running" | "ready_for_review" | "failed";
   stages: Record<ImportStage, StageInfo>;
   error: string | null;
   createdAt: string;

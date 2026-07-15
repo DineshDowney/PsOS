@@ -20,6 +20,17 @@ let unavailableReason: string | null = null;
 export async function removeBackground(
   input: Buffer,
 ): Promise<BackgroundRemovalResult | null> {
+  // Escape hatch: @imgly's onnxruntime hard-crashes the whole Node process on
+  // some machines (native GLib/DLL conflict with sharp's libvips on Windows —
+  // observed 2026-07-15, uncatchable from JS). The flag lets imports run
+  // without cutouts until removal is isolated in its own process.
+  if (process.env.PSOS_DISABLE_BG_REMOVAL === "1") {
+    if (!unavailableReason) {
+      unavailableReason = "disabled via PSOS_DISABLE_BG_REMOVAL=1";
+      console.warn("[psos] background removal disabled by env flag");
+    }
+    return null;
+  }
   if (unavailableReason) return null;
   try {
     const mod = await import("@imgly/background-removal-node");

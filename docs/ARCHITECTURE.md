@@ -42,12 +42,26 @@ data/                  gitignored: stylist.db + images/<itemId>/<role>.<ext>
 
 ## Import pipeline
 
-`POST /api/imports` (front + optional back photo) → draft item + job row →
+`POST /api/imports` (front + optional back photo) → draft item + job row (status `queued`) →
+a bounded in-process queue (`PSOS_IMPORT_CONCURRENCY`, default 2) runs pipelines FIFO →
 save originals → background removal (cosmetic) → thumbnail → dominant colors (deterministic
 cross-check) → AI metadata via Agent SDK `Read`-tool vision (zod-validated JSON, confidence
 per field, null-over-guess) → `applyInferenceToItem` → status `ready_for_review`. The UI
 polls the job, then the user reviews/edits (edits flip provenance to `user`) and confirms
 (`state: draft → active`).
+
+Reliability notes (learned from real-photo testing, 2026-07-15):
+- **Background removal is currently disabled** (`PSOS_DISABLE_BG_REMOVAL=1`): imgly's ONNX
+  runtime hard-crashes the whole Node process on load (native GLib conflict with sharp's
+  libvips on Windows; uncatchable from JS). Pipeline degrades gracefully — originals become
+  the catalog images. Fix planned: isolate removal in a child process or swap the library.
+- **Orphan recovery**: jobs stuck `queued`/`running` for >3 min are auto-marked failed on the
+  next import-API touch (crash/restart leaves them behind; the in-process queue does not
+  survive a restart). Runs lazily in `imports/pipeline.ts`, not `instrumentation.ts` —
+  Next's instrumentation bundling pass drags imgly's native binary in and breaks the app.
+- **Extraction model is pinned to `claude-sonnet-5`** (Settings → `ai.extractionModel`):
+  the unpinned default misidentified garments while reporting 1.0 confidence; Sonnet was
+  11-for-11 accurate with honest confidence on the first real batch.
 
 ## Chat
 

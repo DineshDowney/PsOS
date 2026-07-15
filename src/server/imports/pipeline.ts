@@ -1,9 +1,10 @@
 import path from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import { getDb, schema } from "@/server/db/client";
 import { newId, nowIso } from "@/server/lib/ids";
 import { parseJson, toJson } from "@/server/lib/json";
 import { notFound } from "@/server/lib/errors";
+import { createLimiter } from "@/server/lib/limiter";
 import { logActivity } from "@/server/services/activity";
 import { createDraftItem, applyInferenceToItem, getItem } from "@/server/services/catalog";
 import { itemImageDir, relativeImagePath, saveBuffer, sha256Of } from "@/server/imaging/storage";
@@ -37,7 +38,11 @@ const initialStages = (): Stages => ({
 
 function updateJob(
   jobId: string,
-  patch: Partial<{ stages: Stages; status: "running" | "ready_for_review" | "failed"; error: string | null }>,
+  patch: Partial<{
+    stages: Stages;
+    status: "queued" | "running" | "ready_for_review" | "failed";
+    error: string | null;
+  }>,
 ): void {
   getDb()
     .update(schema.importJobs)
@@ -72,7 +77,21 @@ export interface StartImportInput {
   back?: Buffer | null;
 }
 
+/**
+ * Bounded import queue. Uploads enqueue instantly (status "queued") and a
+ * fixed number of pipelines run concurrently — a burst of uploads lines up
+ * instead of stampeding the machine with parallel ONNX/Agent-SDK work.
+ * In-process only: a restart loses the waiting queue, which is why
+ * recoverOrphanedJobs() runs at boot.
+ */
+const IMPORT_CONCURRENCY = (() => {
+  const n = Number(process.env.PSOS_IMPORT_CONCURRENCY ?? 2);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 2;
+})();
+const runLimited = createLimiter(IMPORT_CONCURRENCY);
+
 export function startImport(input: StartImportInput): ImportJob {
+  ensureOrphanRecovery();
   const item = createDraftItem();
   const jobId = newId();
   const ts = nowIso();
@@ -82,20 +101,84 @@ export function startImport(input: StartImportInput): ImportJob {
       id: jobId,
       itemId: item.id,
       stages: toJson(initialStages()),
-      status: "running",
+      status: "queued",
       createdAt: ts,
       updatedAt: ts,
     })
     .run();
-  logActivity("system", "import.started", { type: "import_job", id: jobId });
+  logActivity("system", "import.queued", { type: "import_job", id: jobId });
 
-  // Fire and forget; progress lives in the DB.
-  void runPipeline(jobId, item.id, input).catch((err) => {
+  // Fire and forget behind the limiter; progress lives in the DB.
+  void runLimited(async () => {
+    updateJob(jobId, { status: "running" });
+    await runPipeline(jobId, item.id, input);
+  }).catch((err) => {
     console.error("[psos] import pipeline crashed:", err);
     updateJob(jobId, { status: "failed", error: err instanceof Error ? err.message : String(err) });
   });
 
   return getImportJob(jobId);
+}
+
+/**
+ * Crash recovery: a job still "queued"/"running" whose row hasn't been
+ * touched in a while was interrupted by a crash or restart (the in-process
+ * queue survives neither). Mark it failed with an honest reason — originals
+ * (if the save stage finished) are on disk, so the item can be re-imported.
+ *
+ * Runs lazily on first import-API use per process rather than in a Next.js
+ * instrumentation hook: instrumentation's separate bundling pass drags
+ * imgly's native binary into the bundle and 500s the whole route graph
+ * (observed 2026-07-15). The staleness cutoff (not process start time)
+ * guards active jobs: a live pipeline updates its row every stage
+ * transition, far more often than the cutoff.
+ */
+const ORPHAN_STALE_MS = 3 * 60 * 1000;
+let orphanRecoveryDone = false;
+
+function ensureOrphanRecovery(): void {
+  if (orphanRecoveryDone) return;
+  orphanRecoveryDone = true;
+  try {
+    recoverOrphanedJobs();
+  } catch (err) {
+    console.error("[psos] orphaned-job recovery failed:", err);
+  }
+}
+
+export function recoverOrphanedJobs(): number {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - ORPHAN_STALE_MS).toISOString();
+  const orphans = db
+    .select()
+    .from(schema.importJobs)
+    .where(
+      and(
+        inArray(schema.importJobs.status, ["queued", "running"]),
+        lt(schema.importJobs.updatedAt, cutoff),
+      ),
+    )
+    .all();
+
+  for (const job of orphans) {
+    const stages = parseJson<Stages>(job.stages, initialStages());
+    for (const info of Object.values(stages)) {
+      if (info.status === "running") {
+        info.status = "failed";
+        info.error = "Interrupted by a server restart";
+      }
+    }
+    updateJob(job.id, {
+      stages,
+      status: "failed",
+      error: "Interrupted by a server restart — saved photos are intact; re-import to retry.",
+    });
+    logActivity("system", "import.orphan_recovered", { type: "import_job", id: job.id });
+  }
+  if (orphans.length > 0) {
+    console.warn(`[psos] marked ${orphans.length} interrupted import job(s) as failed`);
+  }
+  return orphans.length;
 }
 
 async function runPipeline(jobId: string, itemId: string, input: StartImportInput): Promise<void> {
@@ -213,6 +296,7 @@ function mapJob(row: typeof schema.importJobs.$inferSelect, withItem = true): Im
 }
 
 export function getImportJob(id: string): ImportJob {
+  ensureOrphanRecovery();
   const row = getDb().select().from(schema.importJobs).where(eq(schema.importJobs.id, id)).get();
   if (!row) throw notFound("Import job", id);
   return mapJob(row);
@@ -220,6 +304,7 @@ export function getImportJob(id: string): ImportJob {
 
 /** Jobs whose item is still a draft (pending review or in flight). */
 export function listOpenImportJobs(): ImportJob[] {
+  ensureOrphanRecovery();
   const db = getDb();
   const drafts = db
     .select({ id: schema.items.id })

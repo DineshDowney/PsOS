@@ -252,9 +252,10 @@ export const importJobs = sqliteTable("import_jobs", {
    * stages: save, background_removal, thumbnail, colors, ai_metadata
    */
   stages: text("stages").notNull(),
-  status: text("status", { enum: ["running", "ready_for_review", "failed"] })
+  /** queued = waiting for a worker slot; enum is TS-level only (no DB CHECK) */
+  status: text("status", { enum: ["queued", "running", "ready_for_review", "failed"] })
     .notNull()
-    .default("running"),
+    .default("queued"),
   error: text("error"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

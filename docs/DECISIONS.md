@@ -3,6 +3,32 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-15 — Background removal disabled pending process isolation
+First real import hard-crashed the entire dev server, twice, reproducibly: loading
+`@imgly/background-removal-node`'s ONNX runtime into a process where sharp/libvips is active
+aborts with `GLib-GObject-CRITICAL` (native DLL conflict on Windows; try/catch never fires).
+Decision: `PSOS_DISABLE_BG_REMOVAL=1` skips the stage (pipeline already degrades gracefully);
+the proper fix — running removal in a disposable child process, or swapping the library — is
+post-deploy Phase 2 work. Cutouts for already-imported items can be backfilled later from the
+stored originals.
+
+## 2026-07-15 — Extraction model pinned to claude-sonnet-5
+The unpinned Agent SDK default called a blue V-neck athletic tee a "Teal Ribbed Polo Shirt
+with three-button placket" at **confidence 1.0** — confidently wrong, the worst failure mode
+for a dataset meant to feed every future AI feature. Pinned `ai.extractionModel` to
+`claude-sonnet-5`: 11-for-11 accurate on the first real batch (read "JOCKEY"/"Kiprun"
+branding off fabric, recognized a kurta's mandarin collar), with honest sub-1.0 confidence
+and 0 where it declined to guess. Latency ~16–23 s/item vs ~10 s — data quality wins.
+
+## 2026-07-15 — Bounded import queue + lazy orphan recovery (not instrumentation.ts)
+Uploads now enqueue (`status: queued`) behind `createLimiter` (`PSOS_IMPORT_CONCURRENCY`,
+default 2) instead of unbounded fire-and-forget — a phone burst can't stampede one machine
+with parallel ONNX/Agent-SDK work. Jobs stuck `queued`/`running` >3 min are auto-failed on
+the next import-API touch. Recovery deliberately does NOT live in Next's `instrumentation.ts`:
+its separate bundling pass pulled imgly's native `.node` binary into the bundle and 500'd
+every API route (observed live). The 3-minute staleness cutoff protects actively-running jobs
+from dev hot-reload re-running recovery.
+
 ## 2026-07-15 — Next.js dev-tools badge cannot be re-shown programmatically
 Hiding the dev indicator via its own menu persists until the dev server restarts; Next ≥15.2
 exposes no API to un-hide it (vercel/next.js discussion #76605). Decision: no fake in-app

@@ -49,7 +49,9 @@ export default function ImportPage() {
     queryKey: ["imports"],
     queryFn: () => apiGet<{ jobs: ImportJob[] }>("/api/imports"),
     refetchInterval: (query) =>
-      query.state.data?.jobs.some((j) => j.status === "running") ? 2000 : 10000,
+      query.state.data?.jobs.some((j) => j.status === "running" || j.status === "queued")
+        ? 2000
+        : 10000,
   });
 
   const upload = useMutation({
@@ -155,6 +157,8 @@ export default function ImportPage() {
                     </>
                   ) : job.status === "failed" ? (
                     <span className="text-xs uppercase tracking-[0.2em] text-danger">failed</span>
+                  ) : job.status === "queued" ? (
+                    <span className="text-xs uppercase tracking-[0.2em] text-muted">queued</span>
                   ) : (
                     <span className="text-xs uppercase tracking-[0.2em] text-accent">processing</span>
                   )}
