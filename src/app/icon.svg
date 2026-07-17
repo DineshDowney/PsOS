@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="12" fill="#0a0a09"/>
+  <!-- minimal hanger mark in the app's off-white -->
+  <g stroke="#e8e6e1" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 16 a5 5 0 1 1 5 -5"/>
+    <path d="M32 16 L32 22"/>
+    <path d="M32 22 L10 40 Q8 42 11 42 L53 42 Q56 42 54 40 Z"/>
+  </g>
+</svg>

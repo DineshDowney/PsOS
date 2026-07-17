@@ -22,6 +22,11 @@ async function handle<T>(res: Response): Promise<T> {
   } catch {
     /* non-JSON error body */
   }
+  // Session expired/missing under the password gate — a toast alone strands a
+  // single-user app, so send the browser to the login screen.
+  if (res.status === 401 && typeof window !== "undefined" && !location.pathname.startsWith("/login")) {
+    location.href = "/login";
+  }
   throw new ApiError(message, code, res.status);
 }
 

@@ -17,3 +17,6 @@ data/
 # local env
 .env
 .env.local
+
+# BiRefNet model (user-downloaded, large binary)
+models/
