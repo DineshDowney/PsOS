@@ -1,10 +1,28 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
 import { CATEGORIES, type Item } from "@/shared/types";
-import { Empty, ItemCard, PageTitle, Spinner, inputClass } from "@/components/ui";
+import {
+  Empty,
+  ItemCard,
+  PageTitle,
+  SectionLabel,
+  SegmentedControl,
+  Spinner,
+  inputClass,
+} from "@/components/ui";
+
+const STATUS_OPTIONS = [
+  { value: "", label: "Any" },
+  { value: "available", label: "Available" },
+  { value: "laundry", label: "Laundry" },
+  { value: "unavailable", label: "Unavailable" },
+] as const;
+
+const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-x-6 gap-y-10";
 
 export default function WardrobePage() {
   const [q, setQ] = useState("");
@@ -32,14 +50,16 @@ export default function WardrobePage() {
 
   return (
     <div>
-      <PageTitle sub={`${items.length} pieces`}>Wardrobe</PageTitle>
+      <PageTitle eyebrow="Wardrobe">
+        {isLoading ? "—" : `${items.length} ${items.length === 1 ? "piece" : "pieces"}`}
+      </PageTitle>
 
       {drafts.length > 0 ? (
-        <div className="mb-10">
-          <h2 className="mb-4 text-[10px] uppercase tracking-[0.25em] text-accent">
+        <div className="mb-12">
+          <SectionLabel className="mb-4 text-accent">
             Needs review · {drafts.length}
-          </h2>
-          <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          </SectionLabel>
+          <div className={gridClass}>
             {drafts.map((item) => (
               <ItemCard key={item.id} item={item} />
             ))}
@@ -47,31 +67,30 @@ export default function WardrobePage() {
         </div>
       ) : null}
 
-      <div className="mb-8 flex flex-wrap gap-3">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search"
-          className={`${inputClass} max-w-xs`}
+      <div className="mb-10 flex flex-col gap-4">
+        <SegmentedControl
+          options={[
+            { value: "", label: "All" },
+            ...CATEGORIES.map((c) => ({ value: c, label: c.replace("_", " ") })),
+          ]}
+          value={category}
+          onChange={setCategory}
         />
-        <select value={category} onChange={(e) => setCategory(e.target.value)} className={`${inputClass} w-40`}>
-          <option value="">All categories</option>
-          {CATEGORIES.map((c) => (
-            <option key={c} value={c}>{c.replace("_", " ")}</option>
-          ))}
-        </select>
-        <input
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          placeholder="Color"
-          className={`${inputClass} w-32`}
-        />
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className={`${inputClass} w-40`}>
-          <option value="">Any status</option>
-          <option value="available">Available</option>
-          <option value="laundry">In laundry</option>
-          <option value="unavailable">Unavailable</option>
-        </select>
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search"
+            className={`${inputClass} max-w-56`}
+          />
+          <input
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            placeholder="Color"
+            className={`${inputClass} w-28`}
+          />
+          <SegmentedControl options={STATUS_OPTIONS} value={status} onChange={setStatus} />
+        </div>
       </div>
 
       {isLoading ? (
@@ -82,12 +101,20 @@ export default function WardrobePage() {
           <code className="text-fg">npm run seed</code> for sample data.
         </Empty>
       ) : (
-        <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <div className={gridClass}>
           {items.map((item) => (
             <ItemCard key={item.id} item={item} />
           ))}
         </div>
       )}
+
+      <Link
+        href="/import"
+        aria-label="Import an item"
+        className="fixed bottom-6 left-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-fg text-2xl font-light text-bg transition-colors hover:bg-accent hover:text-fg md:bottom-10 md:left-[15rem]"
+      >
+        +
+      </Link>
     </div>
   );
 }

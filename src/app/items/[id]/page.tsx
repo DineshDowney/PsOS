@@ -8,7 +8,16 @@ import { apiGet, apiSend } from "@/lib/api";
 import {
   CATEGORIES, FORMALITIES, type Item, type WearEvent,
 } from "@/shared/types";
-import { Button, Field, PageTitle, Spinner, StatusBadge, inputClass } from "@/components/ui";
+import {
+  Button,
+  Field,
+  PageTitle,
+  SectionLabel,
+  SegmentedControl,
+  Spinner,
+  StatusBadge,
+  inputClass,
+} from "@/components/ui";
 import { useToast } from "@/components/providers";
 
 /**
@@ -26,7 +35,7 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
   if (images.length === 0) return null;
   return (
     <div
-      className="relative aspect-square w-full cursor-pointer border border-line bg-surface"
+      className="relative aspect-square w-full cursor-pointer"
       onClick={() => setIndex((i) => (i + 1) % images.length)}
       title={images.length > 1 ? "click to flip" : undefined}
     >
@@ -59,11 +68,17 @@ function Provenance({ item, field }: { item: Item; field: string }) {
   const src = item.fieldSources[field];
   if (!src) return null;
   return (
-    <span className={`ml-2 text-[9px] uppercase tracking-[0.2em] ${src === "user" ? "text-ok" : "text-faint"}`}>
+    <span className={`ml-2 text-[9px] uppercase tracking-[0.08em] ${src === "user" ? "text-ok" : "text-faint"}`}>
       {src}
     </span>
   );
 }
+
+const STATUS_OPTIONS = [
+  { value: "available", label: "Available" },
+  { value: "laundry", label: "Laundry" },
+  { value: "unavailable", label: "Unavailable" },
+] as const;
 
 export default function ItemPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -162,13 +177,15 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
 
   return (
     <div>
-      <PageTitle sub={item.state === "draft" ? "Draft — review and confirm" : undefined}>
+      <PageTitle
+        eyebrow={item.state === "draft" ? "Draft — review and confirm" : "Item"}
+      >
         {item.name || "Untitled"}
       </PageTitle>
 
       {dupes && (dupes.exact.length > 0 || dupes.similar.length > 0) ? (
-        <div className="mb-6 max-w-2xl border border-danger/40 bg-danger/5 p-3 text-xs">
-          <span className="uppercase tracking-[0.2em] text-danger">possible duplicate</span>
+        <div className="mb-8 max-w-2xl border-l-2 border-danger pl-4 text-xs">
+          <SectionLabel className="text-danger">possible duplicate</SectionLabel>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-muted">
             {dupes.exact.map((d) => (
               <Link key={d.id} href={`/items/${d.id}`} className="underline hover:text-fg">
@@ -185,7 +202,7 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
       ) : null}
 
       <div className="grid gap-10 lg:grid-cols-[minmax(280px,420px)_1fr]">
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-5">
           {/* Cropped garment shots only — raw photos (tripod, floor…) stay on disk, never shown */}
           <RotatingPhotos
             name={item.name ?? "item"}
@@ -197,7 +214,7 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
               .filter((img): img is NonNullable<typeof img> => Boolean(img))}
           />
           {item.images.length === 0 ? (
-            <div className="flex aspect-square items-center justify-center border border-line text-faint">
+            <div className="flex aspect-square items-center justify-center text-faint">
               no photos
             </div>
           ) : null}
@@ -208,19 +225,13 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
               worn {item.wearCount}× {item.lastWornAt ? `· last ${item.lastWornAt.slice(0, 10)}` : ""}
             </span>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {(["available", "laundry", "unavailable"] as const).map((s) => (
-              <Button
-                key={s}
-                variant={item.status === s ? "solid" : "outline"}
-                onClick={() =>
-                  patch.mutate({ status: s }, { onSuccess: () => toast("info", `Marked ${s}`) })
-                }
-              >
-                {s}
-              </Button>
-            ))}
-          </div>
+          <SegmentedControl
+            options={STATUS_OPTIONS}
+            value={item.status}
+            onChange={(s) =>
+              patch.mutate({ status: s }, { onSuccess: () => toast("info", `Marked ${s}`) })
+            }
+          />
           <div className="flex gap-2">
             <Button onClick={() => wearToday.mutate()}>Wore it today</Button>
             {item.state === "draft" ? (
@@ -235,44 +246,59 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
                 Confirm import
               </Button>
             ) : null}
-            <Button
-              variant="danger"
-              onClick={async () => {
-                if (!confirm("Archive this item? It disappears from the catalog.")) return;
-                await apiSend(`/api/items/${id}`, "DELETE");
-                router.push("/wardrobe");
-              }}
-            >
-              Archive
-            </Button>
           </div>
         </div>
 
-        <div className="flex max-w-2xl flex-col gap-5">
-          <Field label="Name"><span><input className={inputClass} value={form.name ?? ""} onChange={set("name")} /><Provenance item={item} field="name" /></span></Field>
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Category">
-              <select className={inputClass} value={form.category ?? ""} onChange={set("category")}>
-                <option value="">—</option>
-                {CATEGORIES.map((c) => <option key={c} value={c}>{c.replace("_", " ")}</option>)}
-              </select>
+        <div className="flex max-w-2xl flex-col gap-8">
+          <div className="flex flex-col gap-4">
+            <SectionLabel>Name</SectionLabel>
+            <Field label="Name">
+              <span>
+                <input className={inputClass} value={form.name ?? ""} onChange={set("name")} />
+                <Provenance item={item} field="name" />
+              </span>
             </Field>
-            <Field label="Subcategory"><input className={inputClass} value={form.subcategory ?? ""} onChange={set("subcategory")} /></Field>
-            <Field label="Primary color"><input className={inputClass} value={form.primaryColor ?? ""} onChange={set("primaryColor")} /></Field>
-            <Field label="Color detail"><input className={inputClass} value={form.colorDetail ?? ""} onChange={set("colorDetail")} /></Field>
-            <Field label="Pattern"><input className={inputClass} value={form.pattern ?? ""} onChange={set("pattern")} /></Field>
-            <Field label="Fit"><input className={inputClass} value={form.fit ?? ""} onChange={set("fit")} /></Field>
-            <Field label="Material"><input className={inputClass} value={form.material ?? ""} onChange={set("material")} /></Field>
-            <Field label="Brand"><input className={inputClass} value={form.brand ?? ""} onChange={set("brand")} /></Field>
-            <Field label="Size"><input className={inputClass} value={form.size ?? ""} onChange={set("size")} /></Field>
-            <Field label="Formality">
-              <select className={inputClass} value={form.formality ?? ""} onChange={set("formality")}>
-                <option value="">—</option>
-                {FORMALITIES.map((f) => <option key={f} value={f}>{f.replace("_", " ")}</option>)}
-              </select>
-            </Field>
-            <Field label="Price"><input className={inputClass} type="number" value={form.price ?? ""} onChange={set("price")} /></Field>
           </div>
+
+          <div className="flex flex-col gap-4">
+            <SectionLabel>Category</SectionLabel>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Category">
+                <select className={inputClass} value={form.category ?? ""} onChange={set("category")}>
+                  <option value="">—</option>
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c.replace("_", " ")}</option>)}
+                </select>
+              </Field>
+              <Field label="Subcategory"><input className={inputClass} value={form.subcategory ?? ""} onChange={set("subcategory")} /></Field>
+              <Field label="Formality">
+                <select className={inputClass} value={form.formality ?? ""} onChange={set("formality")}>
+                  <option value="">—</option>
+                  {FORMALITIES.map((f) => <option key={f} value={f}>{f.replace("_", " ")}</option>)}
+                </select>
+              </Field>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4">
+            <SectionLabel>Colors</SectionLabel>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Primary color"><input className={inputClass} value={form.primaryColor ?? ""} onChange={set("primaryColor")} /></Field>
+              <Field label="Color detail"><input className={inputClass} value={form.colorDetail ?? ""} onChange={set("colorDetail")} /></Field>
+              <Field label="Pattern"><input className={inputClass} value={form.pattern ?? ""} onChange={set("pattern")} /></Field>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4">
+            <SectionLabel>Details</SectionLabel>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Fit"><input className={inputClass} value={form.fit ?? ""} onChange={set("fit")} /></Field>
+              <Field label="Material"><input className={inputClass} value={form.material ?? ""} onChange={set("material")} /></Field>
+              <Field label="Brand"><input className={inputClass} value={form.brand ?? ""} onChange={set("brand")} /></Field>
+              <Field label="Size"><input className={inputClass} value={form.size ?? ""} onChange={set("size")} /></Field>
+              <Field label="Price"><input className={inputClass} type="number" value={form.price ?? ""} onChange={set("price")} /></Field>
+            </div>
+          </div>
+
           <Field label="Description" hint={item.fieldSources.description === "user" ? "yours" : "AI draft — edits stick"}>
             <textarea className={`${inputClass} min-h-20`} value={form.description ?? ""} onChange={set("description")} />
           </Field>
@@ -280,7 +306,8 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
             <textarea className={`${inputClass} min-h-16`} value={form.notes ?? ""} onChange={set("notes")} />
           </Field>
 
-          <Field label="Tags">
+          <div className="flex flex-col gap-4">
+            <SectionLabel>Tags</SectionLabel>
             <div>
               <div className="mb-2 flex flex-wrap gap-2">
                 {item.tags.map((t) => (
@@ -288,7 +315,7 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
                     key={t.tag}
                     onClick={() => patch.mutate({ removeTag: t.tag })}
                     title="click to remove"
-                    className="border border-line px-2 py-0.5 text-xs text-muted hover:border-danger hover:text-danger"
+                    className="border border-line px-2 py-0.5 text-xs tracking-[0.08em] text-muted hover:border-danger hover:text-danger"
                   >
                     {t.tag} ×
                   </button>
@@ -307,17 +334,27 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
                 }}
               />
             </div>
-          </Field>
+          </div>
 
-          <div>
+          <div className="mt-2 flex items-center justify-between border-t border-line pt-5">
+            <Button
+              variant="danger"
+              onClick={async () => {
+                if (!confirm("Archive this item? It disappears from the catalog.")) return;
+                await apiSend(`/api/items/${id}`, "DELETE");
+                router.push("/wardrobe");
+              }}
+            >
+              Archive
+            </Button>
             <Button variant="solid" onClick={save} disabled={patch.isPending}>
               {patch.isPending ? "Saving…" : "Save changes"}
             </Button>
           </div>
 
           {wearData?.events.length ? (
-            <div className="mt-4 border-t border-line pt-4">
-              <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-muted">Wear history</div>
+            <div className="border-t border-line pt-4">
+              <SectionLabel className="mb-2">Wear history</SectionLabel>
               <ul className="space-y-1 text-sm text-muted">
                 {wearData.events.slice(0, 10).map((e) => (
                   <li key={e.id}>{e.wornOn}{e.occasion ? ` — ${e.occasion}` : ""}</li>

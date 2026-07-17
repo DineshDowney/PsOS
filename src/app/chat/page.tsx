@@ -100,7 +100,7 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-5rem)] flex-col">
+    <div className="flex h-[calc(100dvh-6rem)] flex-col md:h-[calc(100dvh-7rem)]">
       <PageTitle sub="Claude with live access to your wardrobe — outfits, packing, planning.">
         Stylist Chat
       </PageTitle>

@@ -8,20 +8,21 @@
   --color-fg: #e8e6e1;
   --color-muted: #8a877f;
   --color-faint: #55534d;
-  --color-accent: #c9c5ba;
+  --color-accent: #a84b42;
   --color-danger: #b3564a;
   --color-ok: #7a8f6d;
+  --font-sans: "Instrument Sans Variable", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
 }
 
 html {
   background: var(--color-bg);
   color: var(--color-fg);
-  font-family: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
 ::selection {
-  background: var(--color-accent);
+  background: var(--color-fg);
   color: var(--color-bg);
 }
 
@@ -29,4 +30,24 @@ html {
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-line) transparent;
+}
+
+/* hide the scrollbar entirely (horizontally scrolling nav / segmented controls) */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * Lifts dark garments off the near-black page. Applied only to transparent
+ * cutout thumbnails (.png) — the glow hugs the garment silhouette, so no
+ * rectangular edge can ever appear. Taste knob; alternatives:
+ *   softer, uniform per-tile wash instead of a rim:
+ *     background: radial-gradient(ellipse 70% 60% at 50% 45%, rgb(244 240 232 / 0.05), transparent 70%);
+ *   or warm the whole page one step (in @theme): --color-bg: #12100d;
+ */
+.garment-glow {
+  filter: drop-shadow(0 0 18px rgb(244 240 232 / 0.1)) drop-shadow(0 0 4px rgb(244 240 232 / 0.14));
 }

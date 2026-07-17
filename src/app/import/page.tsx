@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiUpload, apiSend } from "@/lib/api";
 import type { ImportJob, ImportStage } from "@/shared/types";
-import { Button, Empty, PageTitle, itemThumb } from "@/components/ui";
+import { Button, Empty, PageTitle, SectionLabel, garmentGlowClass, itemThumb } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
 const STAGE_LABELS: Record<ImportStage, string> = {
@@ -18,7 +18,7 @@ const STAGE_LABELS: Record<ImportStage, string> = {
 
 function StageRow({ job }: { job: ImportJob }) {
   return (
-    <div className="flex flex-wrap gap-x-5 gap-y-1 text-[10px] uppercase tracking-[0.15em]">
+    <div className="flex flex-wrap gap-x-5 gap-y-1 text-[10px] uppercase tracking-[0.08em]">
       {(Object.keys(STAGE_LABELS) as ImportStage[]).map((stage) => {
         const info = job.stages[stage];
         const color =
@@ -87,8 +87,8 @@ export default function ImportPage() {
         Import
       </PageTitle>
 
-      <div className="mb-12 flex max-w-2xl flex-col gap-4 border border-line bg-surface p-6">
-        <div className="grid grid-cols-2 gap-4">
+      <div className="mb-12 flex max-w-2xl flex-col gap-5">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {(
             [
               ["Front photo", frontRef, frontName, setFrontName],
@@ -97,9 +97,9 @@ export default function ImportPage() {
           ).map(([label, ref, name, setName]) => (
             <label
               key={label}
-              className="flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 border border-dashed border-line text-center hover:border-accent"
+              className="flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 border border-dashed border-line text-center hover:border-fg"
             >
-              <span className="text-[10px] uppercase tracking-[0.2em] text-muted">{label}</span>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-muted">{label}</span>
               <span className="max-w-full truncate px-4 text-xs text-fg">{name || "click to choose"}</span>
               <input
                 ref={ref}
@@ -118,19 +118,23 @@ export default function ImportPage() {
         </div>
       </div>
 
-      <h2 className="mb-4 text-[10px] uppercase tracking-[0.25em] text-muted">In progress & awaiting review</h2>
+      <SectionLabel className="mb-4">In progress & awaiting review</SectionLabel>
       {jobs.length === 0 ? (
         <Empty>No pending imports.</Empty>
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="divide-y divide-line">
           {jobs.map((job) => {
             const thumb = job.item ? itemThumb(job.item) : null;
             return (
-              <div key={job.id} className="flex items-center gap-5 border border-line bg-surface p-4">
-                <div className="h-20 w-20 shrink-0 border border-line">
+              <div key={job.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:gap-5">
+                <div className="h-20 w-20 shrink-0">
                   {thumb ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={thumb} alt="" className="h-full w-full object-contain" />
+                    <img
+                      src={thumb}
+                      alt=""
+                      className={`h-full w-full object-contain ${garmentGlowClass(thumb) ?? ""}`}
+                    />
                   ) : null}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -157,7 +161,7 @@ export default function ImportPage() {
                     </>
                   ) : job.status === "failed" ? (
                     <>
-                      <span className="text-xs uppercase tracking-[0.2em] text-danger">failed</span>
+                      <span className="text-xs uppercase tracking-[0.08em] text-danger">failed</span>
                       <Button
                         onClick={async () => {
                           try {
@@ -173,9 +177,9 @@ export default function ImportPage() {
                       </Button>
                     </>
                   ) : job.status === "queued" ? (
-                    <span className="text-xs uppercase tracking-[0.2em] text-muted">queued</span>
+                    <span className="text-xs uppercase tracking-[0.08em] text-muted">queued</span>
                   ) : (
-                    <span className="text-xs uppercase tracking-[0.2em] text-accent">processing</span>
+                    <span className="text-xs uppercase tracking-[0.08em] text-muted">processing</span>
                   )}
                 </div>
               </div>

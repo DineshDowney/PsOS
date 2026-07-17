@@ -1,54 +1,50 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import "@fontsource-variable/instrument-sans";
 import "./globals.css";
 import { Providers } from "@/components/providers";
+import { NavLinks } from "@/components/nav";
 
 export const metadata: Metadata = {
   title: "Personal Stylist OS",
   description: "Local-first wardrobe management and AI stylist",
 };
 
-const NAV = [
-  { href: "/wardrobe", label: "Wardrobe" },
-  { href: "/import", label: "Import" },
-  { href: "/outfits", label: "Outfit Studio" },
-  { href: "/calendar", label: "Calendar" },
-  { href: "/laundry", label: "Laundry" },
-  { href: "/analytics", label: "Analytics" },
-  { href: "/chat", label: "Stylist Chat" },
-  { href: "/settings", label: "Settings" },
-];
-
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body className="min-h-screen bg-bg text-fg">
         <Providers>
-          <div className="flex min-h-screen">
-            <aside className="fixed inset-y-0 left-0 flex w-52 flex-col border-r border-line bg-bg px-6 py-8">
-              <Link
-                href="/wardrobe"
-                className="mb-12 text-xs font-semibold uppercase tracking-[0.35em] text-fg"
-              >
-                Stylist&nbsp;OS
-              </Link>
-              <nav className="flex flex-col gap-4">
-                {NAV.map((item) => (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className="text-[11px] uppercase tracking-[0.25em] text-muted transition-colors hover:text-fg"
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-              </nav>
-              <div className="mt-auto text-[10px] uppercase tracking-[0.2em] text-faint">
-                Local · Private
-              </div>
-            </aside>
-            <main className="ml-52 min-h-screen flex-1 px-10 py-10">{children}</main>
-          </div>
+          {/* phone: sticky top bar with horizontally scrolling nav */}
+          <header className="sticky top-0 z-40 flex h-12 items-center gap-6 border-b border-line bg-bg px-4 md:hidden">
+            <Link
+              href="/wardrobe"
+              className="shrink-0 text-xs font-semibold uppercase tracking-[0.35em] text-fg"
+            >
+              Stylist&nbsp;OS
+            </Link>
+            <nav className="no-scrollbar flex items-center gap-5 overflow-x-auto">
+              <NavLinks orientation="horizontal" />
+            </nav>
+          </header>
+
+          {/* desktop: fixed sidebar */}
+          <aside className="fixed inset-y-0 left-0 hidden w-52 flex-col border-r border-line bg-bg px-6 py-8 md:flex">
+            <Link
+              href="/wardrobe"
+              className="mb-12 text-xs font-semibold uppercase tracking-[0.35em] text-fg"
+            >
+              Stylist&nbsp;OS
+            </Link>
+            <nav className="flex flex-col gap-4">
+              <NavLinks orientation="vertical" />
+            </nav>
+            <div className="mt-auto text-[10px] uppercase tracking-[0.2em] text-faint">
+              Local · Private
+            </div>
+          </aside>
+
+          <main className="min-h-screen px-4 py-6 md:ml-52 md:px-14 md:py-14">{children}</main>
         </Providers>
       </body>
     </html>
