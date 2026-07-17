@@ -11,6 +11,50 @@ import {
 import { Button, Field, PageTitle, Spinner, StatusBadge, inputClass } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
+/**
+ * One square frame that crossfades between the garment shots (front/back) on
+ * a timer. Click advances immediately. A single photo renders statically.
+ */
+function RotatingPhotos({ images, name }: { images: Item["images"]; name: string }) {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (images.length < 2) return;
+    const t = setInterval(() => setIndex((i) => (i + 1) % images.length), 4000);
+    return () => clearInterval(t);
+  }, [images.length]);
+
+  if (images.length === 0) return null;
+  return (
+    <div
+      className="relative aspect-square w-full cursor-pointer border border-line bg-surface"
+      onClick={() => setIndex((i) => (i + 1) % images.length)}
+      title={images.length > 1 ? "click to flip" : undefined}
+    >
+      {images.map((img, i) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={img.id}
+          src={img.url}
+          alt={`${name} ${img.role}`}
+          className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-700 ${
+            i === index ? "opacity-100" : "opacity-0"
+          }`}
+        />
+      ))}
+      {images.length > 1 ? (
+        <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1.5">
+          {images.map((img, i) => (
+            <span
+              key={img.id}
+              className={`h-1.5 w-1.5 rounded-full ${i === index ? "bg-fg" : "bg-line"}`}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Provenance({ item, field }: { item: Item; field: string }) {
   const src = item.fieldSources[field];
   if (!src) return null;
@@ -143,21 +187,15 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
       <div className="grid gap-10 lg:grid-cols-[minmax(280px,420px)_1fr]">
         <div className="flex flex-col gap-4">
           {/* Cropped garment shots only — raw photos (tripod, floor…) stay on disk, never shown */}
-          {(["front", "back"] as const)
-            .map((side) => {
-              const cropped = item.images.find((i) => i.role === `${side}_cropped`);
-              return cropped ?? item.images.find((i) => i.role === side);
-            })
-            .filter((img): img is NonNullable<typeof img> => Boolean(img))
-            .map((img) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                key={img.id}
-                src={img.url}
-                alt={`${item.name} ${img.role}`}
-                className="w-full border border-line bg-surface object-contain"
-              />
-            ))}
+          <RotatingPhotos
+            name={item.name ?? "item"}
+            images={(["front", "back"] as const)
+              .map((side) => {
+                const cropped = item.images.find((i) => i.role === `${side}_cropped`);
+                return cropped ?? item.images.find((i) => i.role === side);
+              })
+              .filter((img): img is NonNullable<typeof img> => Boolean(img))}
+          />
           {item.images.length === 0 ? (
             <div className="flex aspect-square items-center justify-center border border-line text-faint">
               no photos

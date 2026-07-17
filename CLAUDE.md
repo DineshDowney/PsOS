@@ -24,5 +24,6 @@ Local-first, single-user wardrobe management web app for Dinesh — the foundati
 - Stack: Next.js 15 full-stack (no separate backend). Server logic in `src/server/**` (services/engine/ai/imaging/imports), thin zod-validated route handlers in `src/app/api/**`, screens in `src/app/**`. SQLite via Drizzle (`npm run db:generate` after schema changes; migrations auto-apply at boot). AI via Claude Agent SDK riding the machine's Claude Code login — never introduce API-key handling without asking.
 - Provenance rule is load-bearing: all writes to item fields go through `services/catalog.ts` (user) or `applyInferenceToItem` (AI) — never raw UPDATE on items' editable fields.
 - Run: `npm run dev` (:3000) · verify: `npm test` + `npm run typecheck` · seed: `npm run seed`.
+- Never make HTTP requests from the dev machine to external hosts (no `curl`/`Invoke-RestMethod`/`Invoke-WebRequest` to anything but localhost — a PreToolUse hook enforces this). Verify remote deployments from inside the VM (`gcloud ssh` → `curl localhost:3000`); external reachability checks are done by Dinesh in a browser.
 - All app data (SQLite DB + images) lives under `data/` — gitignored, single-folder backup via Settings → Export.
 - Windows 11 dev machine, Node 24. Docs in `docs/`; record significant decisions in `docs/DECISIONS.md`.

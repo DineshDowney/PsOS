@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "in=$(cat); s=$(printf '%s' \"$in\" | sed -E 's~127\\.0\\.0\\.1~LOCALIP~g; s~0\\.0\\.0\\.0~LOCALIP~g; s~https?://localhost~LOCAL~gI'); if printf '%s' \"$s\" | grep -qiE 'curl|wget|invoke-restmethod|invoke-webrequest|start-bitstransfer|downloadstring|downloadfile|\\biwr\\b|\\birm\\b' && printf '%s' \"$s\" | grep -qE 'https?://|([0-9]{1,3}\\.){3}[0-9]{1,3}'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Blocked: direct HTTP to external hosts from the dev machine trips endpoint security. Verify from inside the VM (gcloud ssh -> curl localhost:3000) or leave the check to the browser.\"}}'; fi",
+            "statusMessage": "Checking for external HTTP"
+          }
+        ]
+      }
+    ]
+  }
+}

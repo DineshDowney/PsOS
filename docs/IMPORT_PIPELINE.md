@@ -189,12 +189,17 @@ backup: zip `data/` (Settings → Export).
 ## Deployment note
 
 Production instance: GCP VM `psos-1` (e2-small, asia-south1-a), app as systemd
-service `psos` (`npm start`, `NODE_ENV=production`, bg removal disabled), port
-3000 open only to Dinesh's IP (firewall rule `psos-app`). `data/` was copied from
-the dev machine on 2026-07-15 — **the VM copy and the laptop copy do not sync**;
-pick one home for real data. AI (chat + import extraction) is **not active on the
-VM** until Claude credentials are set up there (open decision — the app works
-minus AI; imports would save photos but produce blank metadata).
+service `psos` (`npm start`, `NODE_ENV=production`, bg removal **enabled** —
+the child-process fix works on the VM's Linux/x64 same as locally), port 3000
+open only to Dinesh's IP (firewall rule `psos-app`). VM is testing-only: stays
+off unless explicitly started (`scripts/vm-start.cmd` / `vm-stop.cmd`),
+auto-powers-off 60 minutes after every boot (`psos-autostop.service`).
+`data/` was re-synced from the dev machine on 2026-07-16 — **the VM copy and
+the laptop copy do not sync automatically**; re-copy `data/` after each local
+session that changes the wardrobe. AI (chat + import extraction) is **not
+active on the VM** until Dinesh logs in via `claude` in a browser on the VM
+himself (open item — the app works minus AI; imports would save photos but
+produce blank metadata).
 
 ## Retry
 
@@ -225,5 +230,5 @@ not surfaced in the UI.
   any backlog unattended; uploads stay one-at-a-time.
 - Category taxonomy wobble (e.g. underwear → "accessory" vs "bottom") — needs
   a vocabulary pass someday.
-- VM is behind: needs `git pull`, bg-removal flag removed from `psos.service`,
-  Claude login, and a fresh `data/` sync (parked for Phase 3).
+- VM AI is still off pending Dinesh's own `claude` browser login there; `data/`
+  sync between laptop and VM is manual, not automatic.

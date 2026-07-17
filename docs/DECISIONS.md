@@ -3,6 +3,22 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-16 (later) — VM caught up to latest code; auto-shutoff tightened to 60 min
+Pulled `608644d..feccdac` on `psos-1`, removed `PSOS_DISABLE_BG_REMOVAL` from
+`psos.service` (the child-process cutout fix is platform-independent, so the
+VM gets real cutouts now, not just crops), rebuilt, and replaced the VM's
+`data/` with a fresh copy from the laptop (stale copy still had seed items and
+none of the crop/cutout/dedup work). `psos-autostop.service`'s timer dropped
+from 180 to 60 minutes per Dinesh's instruction, edited in the unit file so it
+persists across boots, not just the current session. Confirmed live at the
+VM's (ephemeral) IP: 13 active items served, matching the laptop count. One
+operational note for next time: the auto-shutoff fired mid-deployment during
+this session (real time elapsed past the armed 60-minute mark while stuck on
+an unrelated tool outage) — a restart was needed to finish. Nothing was lost
+since git/service-file state persists on the boot disk, but future VM sessions
+should budget the full deploy sequence inside one 60-minute window rather than
+assuming the timer resets on inactivity.
+
 ## 2026-07-16 — Import workflow completed: retry, review-gated dedup, drafts in Wardrobe
 Retry (`POST /api/imports/[id]/retry`) re-runs the pipeline from on-disk originals — chosen
 over resumable per-stage retry for simplicity; every stage is idempotent and the whole run

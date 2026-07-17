@@ -62,28 +62,93 @@ export async function normalizeUpload(input: Buffer): Promise<ProcessedImage> {
   return { buffer, width: meta.width ?? 0, height: meta.height ?? 0 };
 }
 
+const TILE_SIZE = 640;
+// Fraction of the tile the garment occupies after trim-and-center. Every
+// cutout renders at this occupancy regardless of how much transparent margin
+// the matte inherited from the bbox padding — uniform product-grid framing.
+const TILE_OCCUPANCY = 0.88;
+const ALPHA_CONTENT = 8; // alpha above this counts as visible content
+
+/**
+ * Bounding box of the visible (non-transparent) pixels, or null when the
+ * image has no visible content at all.
+ */
+async function alphaContentBox(
+  input: Buffer,
+): Promise<{ left: number; top: number; width: number; height: number } | null> {
+  const { data, info } = await sharp(input)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let i = 3, pixel = 0; i < data.length; i += info.channels, pixel++) {
+    if (data[i]! <= ALPHA_CONTENT) continue;
+    const x = pixel % info.width;
+    const y = (pixel - x) / info.width;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  if (maxX < minX) return null;
+  return { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
 /**
  * Catalog thumbnail, 640px square. With `alpha: true` (cutout input) the
- * transparency is preserved as PNG so the garment floats on whatever the UI
- * paints behind it — no baked background to clash with the page color.
- * Otherwise (crop/full-frame input) flatten to JPEG on the app background.
+ * garment is trimmed to its visible pixels and recentered at a fixed
+ * occupancy, and the transparency is preserved as PNG so it floats on
+ * whatever the UI paints behind it — no baked background to clash with the
+ * page color. Otherwise (crop/full-frame input) flatten to JPEG on the app
+ * background.
  */
 export async function makeThumbnail(
   input: Buffer,
   opts: { background?: string; alpha?: boolean } = {},
 ): Promise<ProcessedImage> {
   if (opts.alpha) {
+    const box = await alphaContentBox(input);
+    if (box) {
+      const target = Math.round(TILE_SIZE * TILE_OCCUPANCY);
+      const content = await sharp(input)
+        .extract(box)
+        .resize(target, target, { fit: "inside", withoutEnlargement: false })
+        .png()
+        .toBuffer({ resolveWithObject: true });
+      const buffer = await sharp({
+        create: {
+          width: TILE_SIZE,
+          height: TILE_SIZE,
+          channels: 4,
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        },
+      })
+        .composite([
+          {
+            input: content.data,
+            left: Math.floor((TILE_SIZE - content.info.width) / 2),
+            top: Math.floor((TILE_SIZE - content.info.height) / 2),
+          },
+        ])
+        .png()
+        .toBuffer();
+      return { buffer, width: TILE_SIZE, height: TILE_SIZE };
+    }
+    // No visible content (cutoutQa should prevent this) — plain contain resize.
     const buffer = await sharp(input)
-      .resize(640, 640, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .resize(TILE_SIZE, TILE_SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .png()
       .toBuffer();
-    return { buffer, width: 640, height: 640 };
+    return { buffer, width: TILE_SIZE, height: TILE_SIZE };
   }
   const background = opts.background ?? "#111110";
   const buffer = await sharp(input)
-    .resize(640, 640, { fit: "contain", background })
+    .resize(TILE_SIZE, TILE_SIZE, { fit: "contain", background })
     .flatten({ background })
     .jpeg({ quality: 88 })
     .toBuffer();
-  return { buffer, width: 640, height: 640 };
+  return { buffer, width: TILE_SIZE, height: TILE_SIZE };
 }
