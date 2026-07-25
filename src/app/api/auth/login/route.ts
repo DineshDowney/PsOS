@@ -6,6 +6,13 @@
 import { NextResponse } from "next/server";
 import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import {
+  clearLoginFailures,
+  loginDelayMs,
+  loginKey,
+  recordLoginFailure,
+  sleep,
+} from "@/server/lib/login-throttle";
 
 const bodySchema = z.object({ password: z.string().min(1) });
 
@@ -33,15 +40,23 @@ export async function POST(req: Request) {
     );
   }
 
+  // Price every guess: the app is reachable from the internet, so repeated
+  // failures get progressively slower. A correct password clears the cost, so
+  // this can never lock the owner out (see login-throttle.ts).
+  const key = loginKey(req.headers);
+  await sleep(loginDelayMs(key));
+
   // Hash both sides so timingSafeEqual gets equal-length buffers.
   const a = createHash("sha256").update(parsed.data.password).digest();
   const b = createHash("sha256").update(configured).digest();
   if (!timingSafeEqual(a, b)) {
+    recordLoginFailure(key);
     return NextResponse.json(
       { error: { message: "Wrong password", code: "unauthorized" } },
       { status: 401 },
     );
   }
+  clearLoginFailures(key);
 
   const res = NextResponse.json({ ok: true });
   res.cookies.set(COOKIE, sessionToken(configured), {

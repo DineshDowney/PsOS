@@ -20,9 +20,10 @@ from the laptop.
 | Front + back regeneration | Built (`--side` to restrict; both by default) |
 | Catalog tile follows the new generation | Built — the tile is always repointed at the fresh image |
 | App on VM | Running (`systemctl is-active psos` → active) at `http://34.100.219.116:3000` |
-| Password gate (opt-in via `PSOS_PASSWORD`) | Built; **not yet set on the VM** (no password in the systemd unit) |
+| Password gate | **ACTIVE on the VM.** `EnvironmentFile=-/etc/psos.env` + restart is enough — verified no rebuild needed. Currently holds a throwaway random value; Dinesh sets his own with `psos-set-password` on the VM |
+| Login brute-force cost | Progressive delay on `/api/auth/login` (`login-throttle.ts`), deliberately **not** a lockout so nobody can lock Dinesh out of his own wardrobe |
 | Static IP `34.100.219.116` | Reserved + attached to `psos-1`. Costs ~$7/mo now that billing is live — keep or release? |
-| Firewall `psos-app` | tcp:3000 from `223.185.130.167/32` only. Needs an update whenever Dinesh's home IP rotates |
+| Firewall `psos-app` | **tcp:3000 from `0.0.0.0/0`** — opened 2026-07-25 on Dinesh's call, password-first, so the app works from any device including his phone. No more IP-allowlist churn |
 | Editorial UI (wardrobe/item/import) | Shipped `5babeec` |
 | BiRefNet segmentation engine | **Dropped** (Dinesh, 2026-07-25). `PSOS_BG_ENGINE=imgly` is forced in the regen script; its worker crashes on the VM |
 | App icon | Done (`src/app/icon.svg`) |
@@ -115,12 +116,11 @@ npx tsx scripts/cutout-diag.ts <image>                  # why didn't this become
 
 - **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
   `instances.start`, so hitting a URL from the phone boots the VM; open the app ~5 min later.
-- **Open the app to the internet, password first** (Dinesh's call, 2026-07-25). The unit now
-  has `EnvironmentFile=-/etc/psos.env` and `/usr/local/bin/psos-set-password` prompts for the
-  value on the VM, so the password never passes through a transcript. Remaining: he runs it,
-  then the `psos-app` firewall source range goes to `0.0.0.0/0` — **in that order**, and
-  confirm `/wardrobe` returns 307 before opening (if it does not, the middleware needs a
-  rebuild, since Next can inline env vars into the middleware bundle at build time).
+- **HTTPS.** The app is now internet-facing on plain HTTP, so the password crosses the wire in
+  the clear and the session cookie is not `secure`. A Cloudflare Tunnel (already on this list)
+  fixes both; until then treat the password as low-value and don't reuse one.
+- Quality follow-ups from the first full regeneration: the cap's cutout has speckle artifacts
+  along the top edge, and the blue block-print kurta appears to exist as two duplicate items.
 - Retry for partially-failed import jobs (stage failed but job `ready_for_review`).
 - Category taxonomy pass (underwear → "accessory" vs "bottom" wobble).
 - Cloudflare Tunnel + domain (kills IP-allowlist churn, HTTPS, phone-anywhere).
