@@ -1,0 +1,54 @@
+#!/bin/sh
+# Decide whether the VM should stay up. Run by psos-keepalive.timer every 30 min.
+#
+# Reads one file written by the app: /run/psos/keepalive, containing a UNIX-ms
+# deadline. In the future = "something needs me" (an import queue draining, or
+# Dinesh actually clicking around). See src/server/lib/keepalive.ts.
+#
+# Three branches, and the third one is the whole reason this is a script and not
+# a one-liner:
+#
+#   hold fresh              -> cancel any pending poweroff
+#   hold stale, none armed  -> arm one for +40 min
+#   hold stale, one armed   -> LEAVE IT ALONE
+#
+# That last branch matters. Re-arming "+40" on every stale check would push the
+# poweroff 40 minutes into the future forever, so an idle VM would never sleep
+# and the bill would grow silently — the exact opposite of the point.
+#
+# psos-autostop.service still fires `shutdown -h +60` at boot as the backstop, so
+# there is never a window with nothing armed.
+
+set -eu
+
+FLAG=/run/psos/keepalive
+SCHEDULED=/run/systemd/shutdown/scheduled
+GRACE_MIN=40
+
+now_ms=$(( $(date +%s) * 1000 ))
+
+hold=0
+if [ -r "$FLAG" ]; then
+  hold=$(cat "$FLAG" 2>/dev/null || echo 0)
+  # Anything that is not a plain integer counts as "no hold" — fail safe means
+  # the VM sleeps, never that it stays up on garbage.
+  case "$hold" in
+    ''|*[!0-9]*) hold=0 ;;
+  esac
+fi
+
+if [ "$hold" -gt "$now_ms" ]; then
+  if [ -e "$SCHEDULED" ]; then
+    logger -t psos-keepalive "held for $(( (hold - now_ms) / 60000 )) more min - cancelling poweroff"
+    /usr/sbin/shutdown -c
+  fi
+  exit 0
+fi
+
+if [ -e "$SCHEDULED" ]; then
+  logger -t psos-keepalive "idle, poweroff already armed - leaving it"
+  exit 0
+fi
+
+logger -t psos-keepalive "idle - powering off in ${GRACE_MIN} minutes"
+/usr/sbin/shutdown -h "+${GRACE_MIN}"

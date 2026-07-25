@@ -1,0 +1,11 @@
+[Unit]
+Description=Check every 30 min whether psos still needs the VM awake
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=30min
+# The decision has minute granularity; don't wake the box on the dot for it.
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

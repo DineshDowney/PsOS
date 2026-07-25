@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { useKeepalive } from "@/components/keepalive";
 
 // ---------------------------------------------------------------------------
 // Toasts — small, self-contained; every mutation error lands here.
@@ -24,6 +25,8 @@ let toastSeq = 0;
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // Wraps every screen, so this is the one place the VM keepalive belongs.
+  useKeepalive();
 
   const push = useCallback((kind: Toast["kind"], text: string) => {
     const id = ++toastSeq;

@@ -1,15 +1,23 @@
 # psos — Status & Plan
 
 Living document: what is planned, what is done, where we are. Update as work lands.
-Last updated: 2026-07-25.
+Last updated: 2026-07-26.
 
 ## Current objective
 
-**Phase closed 2026-07-25.** The wardrobe is regenerated as clean studio product shots, and
-*new uploads get the same treatment automatically* — Gemini for both metadata and imagery,
-running on the VM, reachable from any device behind a password.
+**Phase 3 A+B, 2026-07-26.** The app has a real HTTPS URL that survives reboots, and the VM
+stays awake while there is work or a human, then sleeps on its own. Next up is the bulk
+front-only photo upload, then the UI redesign (Phase C, deferred by Dinesh).
 
-Next phase starts from the backlog at the bottom.
+## The URL
+
+**<https://psos.tail620d1e.ts.net>** — Tailscale Funnel, public, real cert, stable across
+reboots because it is bound to the machine name rather than the IP. Bookmark it; it does not
+change.
+
+Fallbacks if Funnel misbehaves (both tailnet-only, both need Tailscale on the device):
+`https://psos.tail620d1e.ts.net` still works inside the tailnet, and `http://100.80.243.100:3000`
+hits the VM directly.
 
 ## Where we are
 
@@ -21,13 +29,14 @@ Next phase starts from the backlog at the bottom.
 | Prompts | Rewritten. Image = PRESENTATION (one pose/light/framing for every garment) vs IDENTITY (untouchable). Metadata = naming convention + category disambiguation + specific colour names |
 | Cutout quality | Sheared-mask bug fixed (finding 8); bright halo on the dark grid fixed (finding 10) |
 | Gemini rate limits | Same-model backoff 20/45/90s honouring `Retry-After`, plus 5s batch pacing and `--missing` to retry a partial run |
-| App on VM | Running at **`http://34.100.219.116:3000`**, commit `4e43ddc` |
+| App on VM | **`https://psos.tail620d1e.ts.net`** via Tailscale Funnel |
 | Password gate | **ACTIVE.** Root-owned `/etc/psos.env` via `EnvironmentFile`; no rebuild needed (verified). Rotate with `psos-set-password` on the VM |
-| Login brute-force cost | Progressive delay on `/api/auth/login`, deliberately **not** a lockout |
-| Firewall `psos-app` | **tcp:3000 from `0.0.0.0/0`** — opened password-first, so the app works from any device including his phone |
+| Login brute-force cost | Progressive delay on `/api/auth/login`, deliberately **not** a lockout. `x-forwarded-for` trusted only when `PSOS_BEHIND_TLS=1` |
+| Firewall `psos-app` | tcp:3000 from `0.0.0.0/0` — **to be deleted** once Funnel has survived two reboots |
 | Billing account `01BB42-93FE43-97EFA2` | Open; trial-upgrade credit valid to 2026-10-14 |
-| Static IP `34.100.219.116` | Attached to `psos-1`. ~$7/mo — **open question: keep or release?** |
-| VM shutdown | Hard 60-min autostop at boot (`psos-autostop.service`). Idle-based shutdown was considered and **rejected** by Dinesh |
+| Static IP `34.100.219.116` | Attached to `psos-1`. **To be released** (ephemeral instead) after the two-reboot proof |
+| VM shutdown | 60-min autostop at boot as backstop, plus a 30-min keepalive check (`psos-keepalive.timer`) that cancels it while there is work or a human |
+| VM config in git | `deploy/vm/` — units, keepalive script, install steps |
 | BiRefNet segmentation | **Dropped** as a direction; opt-in via `PSOS_BG_ENGINE=birefnet`, imgly is the default |
 | Editorial UI (wardrobe/item/import) | Shipped `5babeec` |
 | App icon | Done (`src/app/icon.svg`) |
@@ -89,6 +98,41 @@ Verified against the real API / real images, in order:
     crashes on the VM, so a fresh upload there was *guaranteed* no cutout. Now wired as a
     first-class stage, and proven live end to end.
 
+## Live findings (2026-07-26 session)
+
+12. **`tailscale serve`/`funnel` do not hang — they block on a browser approval.** Both print a
+    `https://login.tailscale.com/f/<feature>?node=…` link and then *wait* for the click, with no
+    further output. A 180 s timeout looked exactly like a hang and sent us hunting a nonexistent
+    bug; the command finally returned an hour later, the moment the link was clicked. Separately,
+    `tailscale cert` returned `500 … your Tailscale account does not support getting TLS certs`,
+    which is the message for **HTTPS certificates disabled on the tailnet** — an admin-console
+    toggle, not a plan limitation. Always bound these with `timeout` and read the link out of the
+    output. Three separate approvals were needed: HTTPS certs, Serve, Funnel.
+
+13. **The login throttle was pricing nothing.** `loginKey()` trusted the first `x-forwarded-for`
+    hop, but with the app served directly that header is attacker-supplied — a guesser could
+    rotate the key on every request and never accumulate a delay. Fixed: shared bucket unless
+    `PSOS_BEHIND_TLS=1`, last hop when a real proxy is in front. Found by re-reading the code,
+    not by an incident.
+
+14. **"Any HTTP request keeps the VM awake" would have been silently expensive.** The Import
+    screen's TanStack Query polls every 2–10 s (`refetchInterval`), so a backgrounded tab would
+    have refreshed the keepalive forever — precisely the failure mode that got idle shutdown
+    rejected on 07-25. The heartbeat therefore requires the tab to be *visible* **and** a
+    pointer/key event since the last beat.
+
+15. **Re-arming the poweroff on every idle check would never sleep.** `shutdown -h +40` fired at
+    each 30-minute check pushes the deadline 40 minutes out in perpetuity. The check must no-op
+    when a poweroff is already scheduled. Caught in design, not in the bill.
+
+16. **The back photo never reaches the catalog tile.** Traced every consumer: the back feeds the
+    garment box, a *second* Gemini image call, a back cutout, and a second image on the metadata
+    call — but `bestFront()` is front-only by construction. `describeInput()`
+    (`ai/extraction.ts:214`) already emits *"it shows the FRONT only; there is no back image"*
+    for single-image input and `bbox_back` is nullable, so **front-only needs no code change**
+    and halves the image calls. Shoot the back only where identity lives there (back prints,
+    yokes, jacket back panels).
+
 ## Import pipeline as built
 
 Seven single-purpose stages over one context object (`imports/pipeline.ts`):
@@ -128,7 +172,15 @@ npx tsx scripts/regenerate-images.ts                    # everything, front + ba
 npx tsx scripts/regenerate-images.ts --missing          # retry only what has no generation yet
 npx tsx scripts/regenerate-images.ts --only <itemId>    # redo one item
 npx tsx scripts/cutout-diag.ts <image>                  # why didn't this become a cutout?
+
+# URL / power (on the VM)
+tailscale funnel status                                 # is the public URL wired to :3000?
+journalctl -t psos-keepalive -n 20                      # every sleep/stay-awake decision
+cat /run/psos/keepalive                                 # UNIX-ms deadline, or absent
+cat /run/systemd/shutdown/scheduled                     # USEC=… if a poweroff is armed
 ```
+
+See `deploy/vm/README.md` for the units, the install steps and the Tailscale gotchas.
 
 ## Data layout
 
@@ -147,22 +199,35 @@ npx tsx scripts/cutout-diag.ts <image>                  # why didn't this become
 
 Highest value first:
 
-1. **HTTPS via Cloudflare Tunnel + a domain.** The app is internet-facing on plain HTTP, so
-   the password crosses the wire in the clear and the session cookie cannot be `secure`. Also
-   kills the fixed-IP dependency (see the static-IP question above) and makes phone access
-   work anywhere. Until it lands, treat the psos password as low-value and never reuse one.
-2. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
-   `instances.start`, so hitting a URL from the phone boots the VM; open the app ~5 min later.
-   Matters more now that the app is genuinely usable from a phone.
-3. **Catalog the rest of the wardrobe.** The pipeline is ready and one-shot per garment; this
-   is now photo-taking work, not engineering work.
-4. Quality follow-ups from the regeneration: the cap's cutout had speckle artifacts along the
+1. **Tear down the raw-IP path** — only after Funnel has survived **two** reboots, because
+   closing the firewall before it has proven itself locks him out with only `gcloud ssh` to
+   recover. Then `gcloud compute firewall-rules delete psos-app`, swap the static IP for
+   ephemeral, release `34.100.219.116`, and rewrite `scripts/vm-start.cmd` (it currently `curl`s
+   the external IP **from the laptop**, which both breaks when the IP goes and violates the
+   no-external-HTTP rule).
+2. **Catalog the rest of the wardrobe, front-only.** The pipeline is ready and one-shot per
+   garment; this is photo-taking work now, not engineering work. Front-only halves the image
+   calls and the quota stalling (finding 16).
+3. Quality follow-ups from the regeneration: the cap's cutout had speckle artifacts along the
    top edge, and the blue block-print kurta looks like two duplicate items (archive one).
-   Re-check both after the prompt + halo re-run.
-5. Retry for partially-failed import jobs (a stage failed but the job reached
+   Re-check both on a contact sheet of the re-run.
+4. **UI redesign (Phase C).** Deferred by Dinesh 2026-07-26, not dropped. Measured complaint:
+   12 motion-related utilities across 1,958 lines of TSX, no animation library — but the real
+   cause is structural, not decorative: every screen is `"use client"` + fetch-after-hydration,
+   so first paint is an empty page with a spinner. Server-render the first screenful before
+   touching any visual direction.
+5. **Bulk import UI** — `<input multiple>` → one photo = one garment → N POSTs. Backend needs no
+   changes. Cut from Phase B by Dinesh; still worth having before a 40-garment batch.
+6. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
+   `instances.start`, so hitting a URL from the phone boots the VM.
+7. Retry for partially-failed import jobs (a stage failed but the job reached
    `ready_for_review` — currently only wholly-failed jobs can retry).
-6. Editorial treatment for the remaining 7 screens.
-7. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
+8. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
 
-Considered and **rejected**: idle-based VM shutdown (Dinesh, 2026-07-25) — a forgotten open
-tab would keep the VM alive indefinitely, and the hard 60-minute autostop is good enough.
+Considered and **rejected**: paying for a domain (no free path exists via GCP — see DECISIONS);
+tailnet-only `tailscale serve` (more secure, but Dinesh wants the URL to work without a
+Tailscale client).
+
+**Superseded:** "idle-based VM shutdown — rejected 2026-07-25" no longer holds. See the
+2026-07-26 decision entry: the flag tracks work and interaction rather than traffic, so the
+forgotten-tab failure mode that drove the rejection cannot occur.

@@ -6,6 +6,7 @@ import { newId, nowIso } from "@/server/lib/ids";
 import { parseJson, toJson } from "@/server/lib/json";
 import { badRequest, notFound } from "@/server/lib/errors";
 import { createLimiter } from "@/server/lib/limiter";
+import { holdFor } from "@/server/lib/keepalive";
 import { logActivity } from "@/server/services/activity";
 import { createDraftItem, applyInferenceToItem, getItem } from "@/server/services/catalog";
 import { itemImageDir, relativeImagePath, resolveImagePath, saveBuffer, sha256Of } from "@/server/imaging/storage";
@@ -149,15 +150,52 @@ export function startImport(input: StartImportInput): ImportJob {
   return getImportJob(jobId);
 }
 
+/**
+ * Keep the VM awake while there is queued work — otherwise it powers off
+ * mid-batch and the user's photos are half-imported. Ticking on a timer rather
+ * than writing the flag per stage because a single stage can stall for many
+ * minutes: image generation is 1-wide process-wide and retries 429s with
+ * 20s/45s/90s backoff, so a job 15th in line goes quiet for a long time while
+ * being entirely healthy.
+ *
+ * Self-terminating by construction: the ticker exists only while jobs are in
+ * flight, so a drained queue stops refreshing the flag and the VM sleeps. That
+ * is what makes "queue 20 imports and close the laptop" safe.
+ */
+const HOLD_TICK_MS = 5 * 60_000;
+const HOLD_WINDOW_MS = 15 * 60_000;
+
+let inFlight = 0;
+let holdTicker: NodeJS.Timeout | null = null;
+
+function workStarted(): void {
+  inFlight++;
+  if (holdTicker) return;
+  holdFor(HOLD_WINDOW_MS);
+  holdTicker = setInterval(() => holdFor(HOLD_WINDOW_MS), HOLD_TICK_MS);
+  // Never keep the node process alive on the ticker's account.
+  holdTicker.unref?.();
+}
+
+function workFinished(): void {
+  inFlight = Math.max(0, inFlight - 1);
+  if (inFlight > 0 || !holdTicker) return;
+  clearInterval(holdTicker);
+  holdTicker = null;
+}
+
 /** Fire and forget behind the limiter; progress lives in the DB. */
 function enqueue(jobId: string, itemId: string, input: StartImportInput): void {
+  workStarted();
   void runLimited(async () => {
     updateJob(jobId, { status: "running" });
     await runPipeline(jobId, itemId, input);
-  }).catch((err) => {
-    console.error("[psos] import pipeline crashed:", err);
-    updateJob(jobId, { status: "failed", error: err instanceof Error ? err.message : String(err) });
-  });
+  })
+    .catch((err) => {
+      console.error("[psos] import pipeline crashed:", err);
+      updateJob(jobId, { status: "failed", error: err instanceof Error ? err.message : String(err) });
+    })
+    .finally(workFinished);
 }
 
 /**

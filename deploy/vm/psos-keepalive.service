@@ -1,0 +1,6 @@
+[Unit]
+Description=psos keepalive check (decide whether the VM sleeps)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/psos-keepalive-check

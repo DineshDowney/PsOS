@@ -207,6 +207,18 @@ export interface ActivityEntry {
   detail: Record<string, unknown> | null;
 }
 
+/**
+ * VM power state. All timestamps are UNIX ms; `now` is the SERVER's clock, so a
+ * countdown can be rendered without trusting the device's. `enabled` is false
+ * off the VM (local dev), where nothing ever powers off.
+ */
+export interface PowerState {
+  enabled: boolean;
+  holdUntil: number | null;
+  poweroffAt: number | null;
+  now: number;
+}
+
 export interface AnalyticsSummary {
   totalItems: number;
   byCategory: Array<{ category: string; count: number }>;

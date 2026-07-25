@@ -3,6 +3,84 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-26 — HTTPS via Tailscale Funnel; no domain bought, no inbound port
+The app was internet-facing on plain HTTP at a raw IP (`http://34.100.219.116:3000`) with the
+firewall open to `0.0.0.0/0`, so the shared password crossed the wire in cleartext and the
+session cookie could not be `Secure`. It now serves on **`https://psos.tail620d1e.ts.net`**.
+
+Cloudflare Tunnel was the obvious candidate and was rejected on one hard requirement: the VM
+powers off constantly, and a Cloudflare *quick* tunnel mints a **random** hostname on every
+start. A *named* tunnel is stable but needs a domain whose nameservers point at Cloudflare —
+i.e. a purchase. **There is no free-domain path** [Certain on GCP, Likely on the rest]: GCP
+Cloud Domains is a paid reseller, Google Domains was sold to Squarespace in 2023, and the
+free-TLD registrars (Freenom et al.) stopped issuing in 2023.
+
+Tailscale Funnel satisfies every constraint at once: hostname bound to the machine name (stable
+across reboots), a real Let's Encrypt cert Tailscale renews, free on the Personal plan, and
+**no inbound firewall port at all** because `tailscaled` dials out. Cost: an ugly hostname
+bookmarked once, and a second vendor in the boot path. Upgrade path if a domain is ever bought:
+swap to a named Cloudflare tunnel in ~15 min — nothing in the app depends on either.
+
+Tailnet-only `tailscale serve` was offered as strictly more secure (his phone is already on the
+tailnet, so it would have worked with zero public exposure). Dinesh chose public Funnel, so
+`/api/auth/login` remains the one endpoint strangers can reach and the login throttle keeps
+carrying real weight.
+
+Two gotchas worth remembering: `--accept-dns=false` on `tailscale up` is **load-bearing** — MagicDNS
+rewrites `/etc/resolv.conf` and the app resolves `metadata.google.internal` for Vertex ADC, so
+letting Tailscale own DNS would break image generation. And both `serve` and `funnel` **block
+waiting for a browser approval** the first time, printing a `login.tailscale.com/f/...` link;
+that looks exactly like a hang and cost us a session's worth of confusion.
+
+**Cost correction:** releasing the static IP was earlier described as saving ~$7/mo. GCP has
+billed *all* external IPv4 since 2024, so an attached ephemeral IP still costs ~$0.005/hr
+[Likely]. The real saving is only the many hours the VM is powered off, when a reservation bills
+and an ephemeral address does not. An external IP is kept either way — the VM needs outbound
+reach for Vertex and Tailscale, and dropping it forces Cloud NAT, which costs far more. So the
+case for Funnel is security and stability, not money.
+
+## 2026-07-26 — Login throttle only trusts `x-forwarded-for` behind a real proxy
+`loginKey()` read the first `x-forwarded-for` hop unconditionally. Served directly, that header
+is just attacker-supplied text, so a guesser could hand himself a fresh bucket on every request
+and the progressive delay priced nothing at all — a security hole disguised as a security
+feature. Now: one **shared** bucket unless `PSOS_BEHIND_TLS=1`, and the **last** hop when a
+proxy we control is in front (the rightmost entry is the one our proxy appended; everything to
+its left is client-supplied). The shared fallback is coarser but honest, and it still prices
+every guess.
+
+The same flag drives `secure` on the session cookie, which is why it is a flag and not a
+constant: hardcoding `secure: true` would make the cookie unsettable over the plain HTTP that
+`npm run dev` serves locally.
+
+## 2026-07-26 — Idle VM shutdown, SUPERSEDING the 2026-07-25 rejection
+Idle-based shutdown was rejected on 2026-07-25 because a forgotten open tab would keep the VM
+alive indefinitely. That objection was correct against the design on the table — "any HTTP
+request counts as activity" — and it is a real trap here: the Import screen polls every 2–10 s,
+so a backgrounded tab would have billed forever.
+
+Reinstated with a design that cannot fail that way, because the flag tracks **work and human
+interaction**, not traffic. `/run/psos/keepalive` holds a UNIX-ms deadline, written by exactly
+three things: the import queue while jobs are in flight (self-terminating — the queue drains and
+the flag goes stale), a client heartbeat that fires **only** when the tab is visible *and* a
+pointer/key event has happened since the last beat, and a manual "hold 4 h" button.
+
+A systemd timer checks every 30 min: fresh → `shutdown -c`; stale with nothing armed →
+`shutdown -h +40`; **stale with one already armed → leave it alone**. That third branch is the
+part that is easy to get wrong — re-arming `+40` on every stale check would push the poweroff
+out forever and silently turn a 60-minute autostop into an infinite one. `psos-autostop.service`
+(`shutdown -h +60` at boot) stays as the backstop, so an idle boot still dies at T+60 exactly as
+before; after the last real activity the VM sleeps between +40 and +70 min.
+
+The flag lives on tmpfs via systemd's `RuntimeDirectory=psos`, which creates `/run/psos` owned
+by the service user — so the app needs **no sudo, no setuid helper and no sudoers entry**, and a
+stale hold can never survive a reboot or land in the `data/` backup.
+
+## 2026-07-26 — VM units live in `deploy/vm/`, not just on the box
+The systemd units, the keepalive script and the install steps were typed straight onto the VM,
+so a rebuilt or replaced instance would have silently lost them and nobody would have known
+until the bill or the poweroff misbehaved. They are in the repo now. Secrets stay out:
+`/etc/psos.env` is root-owned and never committed.
+
 ## 2026-07-25 — Wardrobe images are AI-REGENERATED, not segmented
 Segmentation was the wrong problem. Real photos (dark garment on a dark bedsheet, tripod and
 feet in frame) defeat any matte, and better models only made the failure prettier. Gemini now
