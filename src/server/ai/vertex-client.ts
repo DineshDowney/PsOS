@@ -1,5 +1,11 @@
 /**
- * Gemini via Vertex AI, API-key auth (express mode).
+ * Gemini via the Google AI (Gemini Developer) API, API-key auth.
+ *
+ * Endpoint note: an AI Studio key authenticates against
+ * `generativelanguage.googleapis.com`. The full Vertex REST surface
+ * (`aiplatform.googleapis.com/v1/projects/...`) rejects API keys outright
+ * ("Expected OAuth2 access token") — verified live 2026-07-25 — so that path is
+ * only an option if we ever switch to service-account/ADC auth.
  *
  * Auth: VERTEX_API_KEY from the environment only — never from `settings` (that
  * table is served publicly by /api/settings) and never committed. On the VM it
@@ -7,10 +13,11 @@
  *
  * Model IDs move faster than this code; every caller passes a CANDIDATE LIST and
  * we use the first model the API accepts, remembering it for the rest of the
- * process. A 404/400 on one candidate is expected, not an error.
+ * process. A 404/400 on one candidate is expected, not an error. `listModels()`
+ * enumerates what this key can actually reach.
  */
 
-const HOST = "https://aiplatform.googleapis.com/v1";
+const HOST = process.env.GEMINI_API_HOST?.trim() || "https://generativelanguage.googleapis.com/v1beta";
 
 export interface InlinePart {
   inlineData: { mimeType: string; data: string };
@@ -75,7 +82,7 @@ export async function generateContent(opts: GenerateOptions): Promise<GenerateRe
 
   const failures: string[] = [];
   for (const model of queue) {
-    const url = `${HOST}/publishers/google/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+    const url = `${HOST}/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
     let res: Response;
     try {
       res = await fetch(url, {
@@ -121,4 +128,22 @@ export function firstImage(result: GenerateResult): Buffer | null {
 
 export function inlineImage(buffer: Buffer, mimeType = "image/jpeg"): InlinePart {
   return { inlineData: { mimeType, data: buffer.toString("base64") } };
+}
+
+export interface ModelInfo {
+  name: string; // "models/gemini-x"
+  displayName?: string;
+  supportedGenerationMethods?: string[];
+}
+
+/** Everything this key can reach — removes all model-id guesswork. */
+export async function listModels(): Promise<ModelInfo[]> {
+  const key = vertexApiKey();
+  if (!key) throw new Error("VERTEX_API_KEY is not set");
+  const res = await fetch(`${HOST}/models?key=${encodeURIComponent(key)}&pageSize=200`);
+  if (!res.ok) {
+    throw new Error(`listModels failed: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
+  }
+  const json = (await res.json()) as { models?: ModelInfo[] };
+  return json.models ?? [];
 }

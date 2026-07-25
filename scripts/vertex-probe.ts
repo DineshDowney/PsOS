@@ -12,7 +12,14 @@ import { loadEnvFile } from "../src/server/lib/env-file";
 loadEnvFile();
 
 import sharp from "sharp";
-import { generateContent, firstText, firstImage, inlineImage, hasVertexKey } from "../src/server/ai/vertex-client";
+import {
+  generateContent,
+  firstText,
+  firstImage,
+  inlineImage,
+  hasVertexKey,
+  listModels,
+} from "../src/server/ai/vertex-client";
 import { imageModels } from "../src/server/ai/image-generation";
 
 const TEXT_CANDIDATES = [
@@ -44,7 +51,20 @@ async function main() {
     console.error("VERTEX_API_KEY not set (expected in .env.local)");
     process.exit(1);
   }
-  console.log("=== text/vision models ===");
+  console.log("=== models this key can reach ===");
+  try {
+    const models = await listModels();
+    const usable = models.filter((m) => m.supportedGenerationMethods?.includes("generateContent"));
+    for (const m of usable) {
+      const id = m.name.replace(/^models\//, "");
+      console.log(`  ${id}${/image/i.test(id) ? "   <-- image-capable?" : ""}`);
+    }
+    console.log(`(${usable.length} of ${models.length} support generateContent)`);
+  } catch (err) {
+    console.log(`  listModels failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  console.log("\n=== text/vision probe ===");
   for (const m of TEXT_CANDIDATES) console.log(await probeText(m));
 
   if (!process.argv.includes("--image")) {
