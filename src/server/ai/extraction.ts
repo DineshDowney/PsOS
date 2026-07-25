@@ -1,5 +1,14 @@
+import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { runAgentToResult } from "@/server/ai/agent";
+import {
+  generateContent,
+  firstText,
+  inlineImage,
+  hasVertexKey,
+  type Part,
+} from "@/server/ai/vertex-client";
 import { extractJsonObject } from "@/server/lib/json";
 import { getSetting } from "@/server/services/settings";
 import { nowIso } from "@/server/lib/ids";
@@ -33,10 +42,38 @@ const bboxSchema = z
 /**
  * Vision metadata extraction for the import pipeline.
  *
- * The agent Reads the item's photos from disk (Claude Code's Read tool handles
- * images natively) and returns structured JSON. Prompted for correctness over
- * completeness: null beats a guess, and every field carries a confidence.
+ * Two engines behind one contract:
+ *  - claude: the Agent SDK Reads photo paths off disk (Claude Code's Read tool
+ *    handles images natively).
+ *  - gemini: photos are base64-inlined into a Vertex request (no filesystem
+ *    access there), JSON requested via responseMimeType.
+ *
+ * Engine selection: `ai.extractionEngine` setting ("claude" | "gemini" |
+ * "auto"), default auto = gemini when a Vertex key is present, else claude.
+ * That makes the VM (no Claude login, key in .env.local) work without a flip,
+ * while the laptop keeps using Claude.
+ *
+ * Prompted for correctness over completeness either way: null beats a guess,
+ * and every field carries a confidence.
  */
+
+const DEFAULT_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"];
+
+function geminiModels(): string[] {
+  const configured = getSetting("ai.extractionModel");
+  const envOverride = process.env.VERTEX_TEXT_MODELS?.trim();
+  if (envOverride) return envOverride.split(",").map((m) => m.trim()).filter(Boolean);
+  // A Claude model id in that setting must not leak into Vertex.
+  if (configured && !configured.startsWith("claude")) return [configured, ...DEFAULT_GEMINI_MODELS];
+  return DEFAULT_GEMINI_MODELS;
+}
+
+export function extractionEngine(): "claude" | "gemini" {
+  const setting = (getSetting("ai.extractionEngine") ?? "auto").toLowerCase();
+  if (setting === "gemini") return "gemini";
+  if (setting === "claude") return "claude";
+  return hasVertexKey() ? "gemini" : "claude";
+}
 
 const nullableString = z.string().trim().min(1).nullable().catch(null);
 
@@ -60,7 +97,11 @@ const extractionSchema = z.object({
   bbox_back: bboxSchema,
 });
 
-function buildPrompt(imagePaths: string[], dominant: DominantColor[]): string {
+/**
+ * @param imageRef how the prompt should refer to the photos: file paths (Claude
+ * reads them) or a sentence about attached images (Gemini gets them inline).
+ */
+function buildPrompt(imageRef: string, dominant: DominantColor[]): string {
   const dominantNote =
     dominant.length > 0
       ? `Pixel analysis of the (background-removed) photo reports these dominant colors: ${dominant
@@ -69,8 +110,7 @@ function buildPrompt(imagePaths: string[], dominant: DominantColor[]): string {
       : "";
 
   return `You are cataloguing one clothing item for a personal wardrobe app.
-Read these photo file(s) of the SAME item (front and back):
-${imagePaths.map((p) => `- ${p}`).join("\n")}
+${imageRef}
 
 ${dominantNote}
 
@@ -102,19 +142,56 @@ Rules:
 - bbox: ${BOX_INSTRUCTION}`;
 }
 
+const MIME_BY_EXT: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+};
+
+function imageParts(imagePaths: string[]): Part[] {
+  return imagePaths.map((p) =>
+    inlineImage(fs.readFileSync(p), MIME_BY_EXT[path.extname(p).toLowerCase()] ?? "image/jpeg"),
+  );
+}
+
 export interface ExtractionInput {
   imagePaths: string[]; // absolute paths
   dominant: DominantColor[];
 }
 
 export async function extractItemMetadata(input: ExtractionInput): Promise<AiInference> {
-  const model = getSetting("ai.extractionModel") ?? undefined;
-  const resultText = await runAgentToResult({
-    prompt: buildPrompt(input.imagePaths, input.dominant),
-    allowedTools: ["Read"],
-    maxTurns: 8,
-    model,
-  });
+  const engine = extractionEngine();
+  let resultText: string;
+  let usedModel: string;
+
+  if (engine === "gemini") {
+    const ref =
+      input.imagePaths.length > 1
+        ? "The attached photos show the SAME item: the first is the FRONT, the second is the BACK."
+        : "The attached photo shows the FRONT of the item. There is no back photo.";
+    const result = await generateContent({
+      models: geminiModels(),
+      parts: [{ text: buildPrompt(ref, input.dominant) }, ...imageParts(input.imagePaths)],
+      responseMimeType: "application/json",
+      temperature: 0.1,
+      maxOutputTokens: 2048,
+    });
+    resultText = firstText(result);
+    usedModel = result.model;
+  } else {
+    const model = getSetting("ai.extractionModel") ?? undefined;
+    const ref = `Read these photo file(s) of the SAME item (front and back):\n${input.imagePaths
+      .map((p) => `- ${p}`)
+      .join("\n")}`;
+    resultText = await runAgentToResult({
+      prompt: buildPrompt(ref, input.dominant),
+      allowedTools: ["Read"],
+      maxTurns: 8,
+      model,
+    });
+    usedModel = model ?? "claude-code-default";
+  }
 
   const raw = extractionSchema.parse(extractJsonObject(resultText));
 
@@ -140,7 +217,7 @@ export async function extractItemMetadata(input: ExtractionInput): Promise<AiInf
     tags: raw.tags.map((t) => t.toLowerCase().trim()).filter(Boolean),
     bbox: raw.bbox as BBox | null,
     bboxBack: raw.bbox_back as BBox | null,
-    model: model ?? "claude-code-default",
+    model: usedModel,
     extractedAt: nowIso(),
   };
 }
@@ -151,17 +228,29 @@ export async function extractItemMetadata(input: ExtractionInput): Promise<AiInf
  * and it never touches metadata, so reviewed fields are untouched.
  */
 export async function extractBoundingBox(imagePath: string): Promise<BBox | null> {
-  const model = getSetting("ai.extractionModel") ?? undefined;
-  const prompt = `Read this clothing photo: ${imagePath}
-Return ONLY a JSON object (no prose) of the form:
+  const engine = extractionEngine();
+  const jsonShape = `Return ONLY a JSON object (no prose) of the form:
 { "bbox": { "x": number, "y": number, "w": number, "h": number } | null }
 ${BOX_INSTRUCTION}`;
-  const text = await runAgentToResult({
-    prompt,
-    allowedTools: ["Read"],
-    maxTurns: 6,
-    model,
-  });
+
+  let text: string;
+  if (engine === "gemini") {
+    const result = await generateContent({
+      models: geminiModels(),
+      parts: [{ text: `This is a clothing photo.\n${jsonShape}` }, ...imageParts([imagePath])],
+      responseMimeType: "application/json",
+      temperature: 0,
+      maxOutputTokens: 256,
+    });
+    text = firstText(result);
+  } else {
+    text = await runAgentToResult({
+      prompt: `Read this clothing photo: ${imagePath}\n${jsonShape}`,
+      allowedTools: ["Read"],
+      maxTurns: 6,
+      model: getSetting("ai.extractionModel") ?? undefined,
+    });
+  }
   const parsed = z.object({ bbox: bboxSchema }).parse(extractJsonObject(text));
   return parsed.bbox as BBox | null;
 }

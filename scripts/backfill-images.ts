@@ -59,10 +59,20 @@ async function boxFor(
   side: "front" | "back",
   photoAbs: string,
 ): Promise<BBox | null> {
-  const raw = parseJson<{ bbox?: BBox | null; bboxBack?: BBox | null }>(item.aiRaw ?? "null", {});
-  const stored = side === "front" ? raw?.bbox : raw?.bboxBack;
+  const raw = parseJson<Record<string, unknown>>(item.aiRaw ?? "null", {}) ?? {};
+  const key = side === "front" ? "bbox" : "bboxBack";
+  const stored = raw[key] as BBox | null | undefined;
   if (stored) return stored;
-  return extractBoundingBox(photoAbs);
+  const derived = await extractBoundingBox(photoAbs);
+  if (derived) {
+    // Persist the derived box so future backfills (and machines without a
+    // Claude login) never repeat this AI call. ai_raw is the raw-inference
+    // store, not a user-editable field — merge, never clobber.
+    const merged = JSON.stringify({ ...raw, [key]: derived });
+    db.update(schema.items).set({ aiRaw: merged }).where(eq(schema.items.id, item.id)).run();
+    item.aiRaw = merged; // keep the in-memory row current for the back-photo pass
+  }
+  return derived;
 }
 
 async function main() {
@@ -139,15 +149,26 @@ async function main() {
         } else {
           cutoutNote = "cutout unavailable";
         }
-        // A rejected/unavailable cutout must also remove any stale cutout from
-        // an earlier run — otherwise regen jobs resurrect the bad matte.
+        // A rejected/unavailable cutout must not resurrect a bad matte from an
+        // earlier run — but it must not destroy a GOOD one either (a worse
+        // engine would silently wipe working cutouts). Re-judge what's stored:
+        // keep it if it still passes QA, delete only if it also fails.
         if (!thumbAlpha) {
           const stale = imageRow(item.id, "transparent_front");
           if (stale) {
             const staleAbs = resolveImagePath(stale.path);
-            db.delete(schema.itemImages).where(eq(schema.itemImages.id, stale.id)).run();
-            if (fs.existsSync(staleAbs)) fs.unlinkSync(staleAbs);
-            cutoutNote += " · stale cutout removed";
+            const staleQa = fs.existsSync(staleAbs)
+              ? await cutoutQa(fs.readFileSync(staleAbs))
+              : { ok: false as const, reason: "file missing" };
+            if (staleQa.ok) {
+              thumbSource = fs.readFileSync(staleAbs);
+              thumbAlpha = true;
+              cutoutNote += " · kept existing cutout (still passes QA)";
+            } else {
+              db.delete(schema.itemImages).where(eq(schema.itemImages.id, stale.id)).run();
+              if (fs.existsSync(staleAbs)) fs.unlinkSync(staleAbs);
+              cutoutNote += " · stale cutout removed";
+            }
           }
         }
       }

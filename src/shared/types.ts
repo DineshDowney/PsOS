@@ -34,6 +34,7 @@ export type ImageRole =
   | "back"
   | "front_cropped"
   | "back_cropped"
+  | "generated_front"
   | "transparent_front"
   | "transparent_back"
   | "thumbnail";

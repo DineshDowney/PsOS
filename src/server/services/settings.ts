@@ -4,10 +4,14 @@ import { getDb, schema } from "@/server/db/client";
 /**
  * Simple key-value settings store.
  * Known keys:
- *   ai.model            — model override for the Agent SDK ("" = Claude Code default)
- *   ai.extractionModel  — model override for import metadata extraction
+ *   ai.model             — model override for the Agent SDK ("" = Claude Code default)
+ *   ai.extractionModel   — model override for import metadata extraction
+ *   ai.extractionEngine  — "auto" (default) | "claude" | "gemini"; auto picks
+ *                          gemini when a Vertex key is present, else claude
+ *
+ * Values are world-readable via GET /api/settings — never store secrets here.
  */
-export const SETTING_KEYS = ["ai.model", "ai.extractionModel"] as const;
+export const SETTING_KEYS = ["ai.model", "ai.extractionModel", "ai.extractionEngine"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 export function getSetting(key: SettingKey): string | null {
