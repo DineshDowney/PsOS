@@ -34,15 +34,38 @@ try {
 
   const inputName = session.inputNames[0];
   const outputs = await session.run({ [inputName]: input });
-  // BiRefNet exports emit one or more side outputs; the final refined map is
-  // conventionally the last output. Take it and sigmoid to [0,1].
-  const outputName = session.outputNames[session.outputNames.length - 1];
-  const logits = outputs[outputName].data;
+
+  // BiRefNet exports emit one or more side outputs. Pick by SHAPE (the full-res
+  // single-channel map) rather than trusting output order.
+  const names = session.outputNames;
+  const outputName =
+    names.find((n) => {
+      const d = outputs[n]?.dims ?? [];
+      return d.length === 4 && d[1] === 1 && d[2] === SIZE && d[3] === SIZE;
+    }) ?? names[names.length - 1];
+  const values = outputs[outputName].data;
+
+  // Whether the export already ends in a sigmoid varies between conversions.
+  // Applying a second one squashes everything into ~0.5-0.73 — no pixel ever
+  // reaches full transparency, so every cutout fails QA with "corner not
+  // transparent". Decide from the actual value range instead of assuming.
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] < min) min = values[i];
+    if (values[i] > max) max = values[i];
+  }
+  const alreadyProbabilities = min >= -0.01 && max <= 1.01;
 
   const mask = new Float32Array(SIZE * SIZE);
   for (let i = 0; i < mask.length; i++) {
-    mask[i] = 1 / (1 + Math.exp(-logits[i]));
+    const v = values[i];
+    mask[i] = alreadyProbabilities ? v : 1 / (1 + Math.exp(-v));
   }
+  console.error(
+    `birefnet: outputs=[${names.join(",")}] chose=${outputName} dims=[${outputs[outputName].dims}] ` +
+      `range=${min.toFixed(3)}..${max.toFixed(3)} sigmoid=${alreadyProbabilities ? "skipped" : "applied"}`,
+  );
   fs.writeFileSync(outPath, Buffer.from(mask.buffer));
   process.exit(0);
 } catch (err) {

@@ -5,88 +5,106 @@ Last updated: 2026-07-25.
 
 ## Current objective
 
-Cut the import pipeline over to **Gemini** (Vertex AI, API key) for both metadata
-extraction and **product-image regeneration**, then regenerate as much of the wardrobe as
-possible. All Gemini calls run **on the VM** — never from the laptop.
+Regenerate every wardrobe image with **Gemini** as a clean studio product shot, front and
+back, and have the catalog show the new images. All Gemini calls run **on the VM** — never
+from the laptop.
 
 ## Where we are
 
 | Thing | State |
 |---|---|
-| Password gate (opt-in via `PSOS_PASSWORD`) | Built, tested locally, **not yet deployed to VM** |
-| App icon | Done (`src/app/icon.svg`) |
-| Static IP `34.100.219.116` | Reserved + attached to `psos-1` (permanent URL) |
+| Billing account `01BB42-93FE43-97EFA2` | **Reopened** by Dinesh — `open: true`, project link `billingEnabled: true` |
+| Gemini image generation | **Working.** First real generation is faithful and clean (ombre blue tee) |
+| Cutout from generated shot | **Fixed** — was a sharp bug, see finding 8 |
+| Front + back regeneration | Built (`--side` to restrict; both by default) |
+| Catalog tile follows the new generation | Built — the tile is always repointed at the fresh image |
+| App on VM | Running (`systemctl is-active psos` → active) at `http://34.100.219.116:3000` |
+| Password gate (opt-in via `PSOS_PASSWORD`) | Built; **not yet set on the VM** (no password in the systemd unit) |
+| Static IP `34.100.219.116` | Reserved + attached to `psos-1`. Costs ~$7/mo now that billing is live — keep or release? |
+| Firewall `psos-app` | tcp:3000 from `223.185.130.167/32` only. Needs an update whenever Dinesh's home IP rotates |
 | Editorial UI (wardrobe/item/import) | Shipped `5babeec` |
-| Trim-and-center cutout thumbnails | Shipped `6aca6f1` |
-| BiRefNet segmentation engine | Committed but **parked** (mass-rejected cutouts: suspected double-sigmoid; model file on VM + laptop) |
-| Local `data/` | **Degraded** by the aborted BiRefNet run (lost some good cutouts) — to be replaced by VM copy |
-| Vertex API key | Rotated clean 2026-07-25; only copy is a local scratch file → goes to VM `.env.local` |
-| Gemini integration | **In progress** (this session) |
+| BiRefNet segmentation engine | **Dropped** (Dinesh, 2026-07-25). `PSOS_BG_ENGINE=imgly` is forced in the regen script; its worker crashes on the VM |
+| App icon | Done (`src/app/icon.svg`) |
 
 ## Live findings (2026-07-25 session)
 
-Verified against the real API, in order:
+Verified against the real API / real images, in order:
 
 1. **API keys do not work on the Vertex REST surface.** `aiplatform.googleapis.com/v1/projects/…`
    returns 401 "Expected OAuth2 access token". An AI Studio key belongs to the Gemini
-   Developer API (`generativelanguage.googleapis.com`). Client now targets that.
+   Developer API (`generativelanguage.googleapis.com`).
 2. **The AI Studio project (`tensile-market-502810-v9`) is blocked**: 403 "Your project has
-   been denied access" on every current model, despite billing being enabled. Abandoned it.
-3. **A key minted in the psos project works** — `gemini-flash-latest`, `gemini-3.6-flash`,
-   `gemini-3.5-flash` all return 200. Extraction path is therefore viable.
-4. **Image generation is blocked by free-tier quota**: every image model
-   (`gemini-3.1-flash-image`, `gemini-2.5-flash-image`, `gemini-3-pro-image`,
-   `nano-banana-pro-preview`) returns 429 with quota id
-   `GenerateRequestsPerDayPerProjectPerModel-FreeTier`. Cloud billing enabled ≠ Gemini API
-   paid tier. **This is the current blocker for regeneration.**
-5. Model ids in my defaults were stale; now taken from a live `listModels()` call
-   (`scripts/vertex-probe.ts` prints what a key can actually reach).
+   been denied access" on every model. Abandoned it.
+3. **A key minted in the psos project reaches text models** (`gemini-flash-latest`,
+   `gemini-3.6-flash`, `gemini-3.5-flash` all 200), so extraction via Gemini is viable.
+4. **The Gemini API free tier has zero image quota** — every image model returned 429
+   `GenerateRequestsPerDayPerProjectPerModel-FreeTier`. Cloud billing enabled ≠ paid tier.
+5. Model ids in the defaults were stale; they now come from a live `listModels()` call
+   (`scripts/vertex-probe.ts` prints what the current credentials can reach).
+6. **Root cause of 1–4: the billing account was CLOSED** (`"open": false`) while the project
+   link still reported `billingEnabled: true` — the *link* existed, the *account* was shut.
+   Dinesh reopened it; the ₹28,157 `FreeTrialUpgrade` credit (valid to 2026-10-14) is scoped
+   to that same account, which is why opening it beat creating a new one.
+7. **Auth that works on the VM: no key at all.** `VERTEX_USE_ADC=1` + the instance metadata
+   server, with the VM on `--scopes=cloud-platform` and `roles/aiplatform.user` on
+   `145415295830-compute@developer.gserviceaccount.com`. The laptop physically cannot make
+   these calls, which is the point.
+8. **The "no cutout passed QA" failure was a sharp bug, not an image problem.**
+   `sharp(...).blur()` runs in sRGB, so blurring a **1-channel** raw buffer hands back
+   **three** channels. `joinChannel(alpha, {channels: 1})` then read the first third of an
+   interleaved RGB buffer and produced a sheared, geometric mask instead of the garment
+   silhouette — while `keptFraction` still looked perfectly healthy (45.6%), which is what
+   made it read like a contradiction. Fixed with `.toColourspace("b-w")` plus a hard length
+   assertion, and covered by two new tests (the existing four all used `feather: 0`, so they
+   never touched the broken path). Same family as the `removeAlpha()` + `joinChannel()` trap
+   in `thumbnails.ts` — **sharp chains silently change channel counts; always assert.**
 
-## Plan for this session
+## Image pipeline as built
 
-1. ~~Rotate the exposed API keys~~ — done (3 deleted, 1 clean key created).
-2. Build locally (no Gemini calls from the laptop):
-   - `src/server/ai/vertex-client.ts` — fetch wrapper, API-key auth, model fallback list.
-   - `src/server/ai/image-generation.ts` — `generateProductShot(crop)`.
-   - `src/server/ai/extraction.ts` — Gemini branch behind `ai.extractionEngine` setting
-     (default `claude`, so nothing changes until flipped).
-   - `scripts/regenerate-images.ts` — batch regeneration, `--dry-run`, `--only <id>`.
-   - `scripts/backfill-images.ts` — regression fix: never delete a passing cutout.
-3. VM session: boot, pull, install, write `.env.local`, validate on ONE item, then batch.
-4. Sync `data/` back down (fixes the degraded local copy) → Dinesh judges the catalog.
+`front_cropped` / `back_cropped` → Gemini product shot → cutout ladder:
 
-## Image strategy (why generate, then still segment)
+1. `cutoutQa` on the raw generation — if the model emitted real alpha, use it untouched;
+2. `keyFlatBackground` — deterministic flood fill of the flat backdrop we asked for;
+3. `removeBackground` (imgly) — ML fallback;
+4. flat-key output that removed the backdrop but failed QA — accepted with a logged warning;
+5. no transparency at all → the tile shows the generation flattened.
 
-Gemini has **no transparent-background output**. So generation does not replace the cutout
-step — it replaces its *input*: generate a clean studio product shot on a seamless neutral
-background, then run the existing `removeBackground()` → `cutoutQa` pipeline on that. Real
-photos (dark garment on dark bedsheet) are the hard case that broke segmentation; a
-synthetic clean background is the easy case.
+The prompt asks for a **real alpha channel first** and spells out the flat-grey fallback in
+detail (no shadow, seam, gradient, vignette or border), because a single stray line across
+the backdrop is enough to block a flood fill.
 
-Every stage keeps its predecessor, so nothing regresses:
-`front` (original, never shown) → `front_cropped` → `generated_front` (Gemini) →
-`transparent_front` (cutout, QA-gated) → `thumbnail`.
+Only a failed *generation* leaves an item untouched. Otherwise the catalog tile always ends
+up on the new image — `mapImage()` cache-busts with `?v=<sha256>`, so browsers pick it up.
+
+## Runbook
+
+```bash
+# on the VM (~/psos), keyless — uses the VM's own service-account identity
+npx tsx scripts/regenerate-images.ts --dry-run          # count + cost estimate, no spend
+npx tsx scripts/regenerate-images.ts --limit 1          # one item, eyeball it first
+npx tsx scripts/regenerate-images.ts                    # everything, front + back
+npx tsx scripts/regenerate-images.ts --only <itemId>    # redo one item
+npx tsx scripts/cutout-diag.ts <image>                  # why didn't this become a cutout?
+```
 
 ## Data layout
 
-- `data/images/<itemId>/<role>.<ext>` — everything the app serves (unchanged convention).
-- `data/generated/<itemId>/` — **new**: raw Gemini output archive, kept for provenance/
-  history, never served. Code stays in `src/` and `scripts/`; data stays under `data/`.
+- `data/images/<itemId>/<role>.<ext>` — everything the app serves.
+- `data/generated/<itemId>/<side>-<sha8>.png` — raw Gemini output archive, never served.
 
 ## Rules that constrain this work
 
-- No HTTP requests to external hosts from the laptop (corporate EDR). VM verification via
-  `gcloud ssh` → `curl localhost:3000`; browser checks are Dinesh's.
-- The Vertex key never enters chat, git, or `/api/settings` (which is publicly readable).
-  It lives in `~/psos/.env.local` on the VM only.
-- AI never overwrites user-edited fields (field-level provenance) — unchanged.
-- Never delete source photos or good derived images on a failed run.
+- No HTTP requests to external hosts from the laptop (corporate EDR — incident SIR0886312).
+  VM verification via `gcloud ssh` → `curl localhost:3000`; browser checks are Dinesh's.
+- Vertex credentials never enter chat, git, or `/api/settings` (publicly readable).
+- AI never overwrites user-edited *fields* (field-level provenance) — unchanged.
+- Never delete source photos; archive every generation.
 
 ## Backlog (agreed, not started)
 
 - **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
-  `instances.start` so hitting a URL from the phone boots the VM; open the app ~5 min later.
-  Needs a design decision on the trigger surface + auth.
+  `instances.start`, so hitting a URL from the phone boots the VM; open the app ~5 min later.
+- Set `PSOS_PASSWORD` in the VM systemd unit (value from Dinesh, never via chat).
 - Retry for partially-failed import jobs (stage failed but job `ready_for_review`).
 - Category taxonomy pass (underwear → "accessory" vs "bottom" wobble).
 - Cloudflare Tunnel + domain (kills IP-allowlist churn, HTTPS, phone-anywhere).

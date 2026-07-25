@@ -47,7 +47,15 @@ function runWorker(args: string[]): Promise<void> {
       { timeout: TIMEOUT_MS, windowsHide: true },
       (err, _stdout, stderr) => {
         if (err) reject(new Error(stderr?.trim() || err.message));
-        else resolve();
+        else {
+          // Workers report mask statistics on stderr; surface them on demand
+          // (PSOS_BG_DEBUG=1) — invaluable when a model's output convention
+          // silently changes.
+          if (process.env.PSOS_BG_DEBUG === "1" && stderr?.trim()) {
+            console.error(`[psos] ${stderr.trim()}`);
+          }
+          resolve();
+        }
       },
     );
   });

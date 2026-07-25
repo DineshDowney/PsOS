@@ -88,6 +88,7 @@ export const itemImages = sqliteTable(
         "front_cropped",
         "back_cropped",
         "generated_front",
+        "generated_back",
         "transparent_front",
         "transparent_back",
         "thumbnail",

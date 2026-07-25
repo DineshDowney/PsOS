@@ -1,25 +1,34 @@
 /**
- * Regenerate wardrobe display images with Gemini.
+ * Regenerate wardrobe display images with Gemini — front and back.
  *
- * For each item: garment crop → Gemini product shot → transparency (flat-key
- * first, segmentation as fallback) → QA gate → thumbnail. Every step keeps the
- * previous artifact, and a failure at any point leaves the item exactly as it
- * was — a bad run can never make the catalog worse.
+ * For each side: garment crop → Gemini product shot → transparency → thumbnail.
+ * The originals (`front`/`back` and their crops) are never touched, and every
+ * raw generation is archived, so a bad run is always recoverable.
  *
- * Raw generations are archived under data/generated/<itemId>/ (never served);
- * the servable copy goes to data/images/<itemId>/generated_front.png like every
- * other role.
+ * The catalog tile ALWAYS ends up showing the new generation (Dinesh, 2026-07-25:
+ * "automatically replace the old cutout photo with the new regen image"). Best
+ * available form wins, in order: model-native transparency → flat-key → ML
+ * segmentation → keyed-but-imperfect → the generation flattened. Only a failed
+ * generation leaves an item alone.
  *
- * VM-only by intent (the Vertex key lives there).
+ * Raw generations archive under data/generated/<itemId>/ (never served); the
+ * servable copies are the `generated_front` / `generated_back` roles.
  *
- * Run: npx tsx scripts/regenerate-images.ts [--dry-run] [--only <itemId>] [--limit N]
+ * VM-only by intent (Vertex credentials live there).
+ *
+ * Run: npx tsx scripts/regenerate-images.ts [--dry-run] [--only <itemId>]
+ *                                           [--limit N] [--side front|back]
  */
 import path from "node:path";
 import fs from "node:fs";
 import { and, eq, ne } from "drizzle-orm";
 import { loadEnvFile } from "../src/server/lib/env-file";
 
-loadEnvFile(); // must precede anything that reads VERTEX_API_KEY
+loadEnvFile(); // must precede anything that reads Vertex config
+
+// BiRefNet is a dead end here (dropped 2026-07-25) and its worker crashes on the
+// VM; the ML rung is only a fallback, so use the bundled imgly weights.
+process.env.PSOS_BG_ENGINE ??= "imgly";
 
 import { getDb, schema, dataDir } from "../src/server/db/client";
 import { newId, nowIso } from "../src/server/lib/ids";
@@ -41,6 +50,8 @@ const db = getDb();
 
 /** ~$0.04/image at current Gemini flash-image rates; for the dry-run estimate. */
 const COST_PER_IMAGE = 0.04;
+
+type Side = "front" | "back";
 
 function imageRow(itemId: string, role: string) {
   return db
@@ -83,9 +94,9 @@ function setThumbnail(itemId: string, absPath: string, buffer: Buffer, w: number
   }
 }
 
-/** Best available source photo for generation: the tight crop, else the original. */
-function sourcePhoto(itemId: string): { buffer: Buffer; mime: string } | null {
-  for (const role of ["front_cropped", "front"] as const) {
+/** Best available source photo for a side: the tight crop, else the original. */
+function sourcePhoto(itemId: string, side: Side): { buffer: Buffer; mime: string } | null {
+  for (const role of [`${side}_cropped`, side]) {
     const row = imageRow(itemId, role);
     if (!row) continue;
     const abs = resolveImagePath(row.path);
@@ -98,42 +109,83 @@ function sourcePhoto(itemId: string): { buffer: Buffer; mime: string } | null {
   return null;
 }
 
+interface Cutout {
+  png: Buffer;
+  how: string;
+  /** false = background removed but QA found an artifact; still better than a grey square. */
+  clean: boolean;
+}
+
 /**
- * Turn a generated shot into a transparent cutout, cheapest rung first:
- *   1. the model already emitted usable alpha — nothing to do (we ask for it);
- *   2. flat-key the uniform background we requested as its fallback;
- *   3. ML segmentation as a last resort.
- * `cutoutQa` is the judge at every rung, so "did the model give us real
- * transparency?" needs no separate detector: an opaque image fails its
- * corner/border checks by definition.
+ * Turn a generated shot into a transparent cutout, best rung first:
+ *   1. the model emitted usable alpha — nothing to do (the prompt asks for it);
+ *   2. flat-key the uniform backdrop we requested as its fallback;
+ *   3. ML segmentation;
+ *   4. flat-key output that removed the backdrop but failed QA — accepted with a
+ *      warning, because a garment with a small artifact beats no replacement.
+ * `cutoutQa` is the judge, so "did the model give us real transparency?" needs no
+ * separate detector: an opaque image fails its corner checks by definition.
  */
-async function cutoutFromGenerated(png: Buffer): Promise<{ png: Buffer; how: string } | null> {
+async function cutoutFromGenerated(png: Buffer): Promise<Cutout | null> {
   const native = await cutoutQa(png);
-  if (native.ok) return { png, how: "native transparency (no post-processing)" };
+  if (native.ok) return { png, how: "native transparency", clean: true };
 
   const flat = await keyFlatBackground(png);
   if (flat) {
     const qa = await cutoutQa(flat.png);
-    if (qa.ok) return { png: flat.png, how: `flat-key (kept ${(flat.keptFraction * 100).toFixed(0)}%)` };
+    if (qa.ok) {
+      return { png: flat.png, how: `flat-key (kept ${(flat.keptFraction * 100).toFixed(0)}%)`, clean: true };
+    }
   }
   const seg = await removeBackground(png);
   if (seg) {
     const qa = await cutoutQa(seg.png);
-    if (qa.ok) return { png: seg.png, how: "segmentation" };
+    if (qa.ok) return { png: seg.png, how: "segmentation", clean: true };
+  }
+  if (flat) {
+    const qa = await cutoutQa(flat.png);
+    return { png: flat.png, how: `flat-key, QA warning: ${qa.reason}`, clean: false };
   }
   return null;
+}
+
+/** Repoint the catalog tile at freshly generated bytes. Always succeeds. */
+async function refreshThumbnail(
+  itemId: string,
+  dir: string,
+  cutout: Cutout | null,
+  generated: Buffer,
+): Promise<string> {
+  if (cutout) {
+    const thumb = await makeThumbnail(cutout.png, { alpha: true });
+    const p = path.join(dir, "thumbnail.png");
+    await saveBuffer(p, thumb.buffer);
+    setThumbnail(itemId, p, thumb.buffer, thumb.width, thumb.height);
+    return "transparent tile";
+  }
+  // No transparency at all: show the studio shot itself rather than keep a stale
+  // tile. Flattened to JPEG on the app background like every other opaque tile.
+  const thumb = await makeThumbnail(generated);
+  const p = path.join(dir, "thumbnail.jpg");
+  await saveBuffer(p, thumb.buffer);
+  setThumbnail(itemId, p, thumb.buffer, thumb.width, thumb.height);
+  return "opaque tile (no transparency available)";
 }
 
 async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry-run");
-  const onlyIdx = args.indexOf("--only");
-  const only = onlyIdx >= 0 ? args[onlyIdx + 1] : undefined;
-  const limitIdx = args.indexOf("--limit");
-  const limit = limitIdx >= 0 ? Number(args[limitIdx + 1]) : undefined;
+  const arg = (flag: string) => {
+    const i = args.indexOf(flag);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const only = arg("--only");
+  const limit = arg("--limit") ? Number(arg("--limit")) : undefined;
+  const sideArg = arg("--side") as Side | undefined;
+  const sides: Side[] = sideArg ? [sideArg] : ["front", "back"];
 
   if (!dryRun && !hasVertexKey()) {
-    console.error("VERTEX_API_KEY is not set (expected in .env.local) — nothing to do.");
+    console.error("No Vertex credentials (expected VERTEX_USE_ADC=1 or a key in .env.local) — nothing to do.");
     process.exit(1);
   }
 
@@ -141,69 +193,86 @@ async function main() {
   if (only) items = items.filter((i) => i.id === only);
   if (limit && limit > 0) items = items.slice(0, limit);
 
-  console.log(`${items.length} item(s) to regenerate`);
   if (dryRun) {
-    console.log(`estimated cost: ~$${(items.length * COST_PER_IMAGE).toFixed(2)} at $${COST_PER_IMAGE}/image`);
+    let shots = 0;
     for (const item of items) {
-      const src = sourcePhoto(item.id);
-      console.log(`- ${item.name || item.id.slice(0, 8)}: ${src ? "ready" : "NO SOURCE PHOTO, would skip"}`);
+      const present = sides.filter((s) => sourcePhoto(item.id, s));
+      shots += present.length;
+      console.log(
+        `- ${item.name || item.id.slice(0, 8)}: ${present.length ? present.join(" + ") : "NO SOURCE PHOTO, would skip"}`,
+      );
     }
+    console.log(
+      `\n${items.length} item(s), ${shots} image(s) to generate — est. ~$${(shots * COST_PER_IMAGE).toFixed(2)} at $${COST_PER_IMAGE}/image`,
+    );
     return;
   }
 
+  console.log(`${items.length} item(s) × [${sides.join(", ")}]`);
   const generatedRoot = path.join(dataDir, "generated");
   let generated = 0;
-  let cutouts = 0;
+  let clean = 0;
+  let failed = 0;
 
   for (const item of items) {
     const label = item.name || item.id.slice(0, 8);
-    const src = sourcePhoto(item.id);
-    if (!src) {
-      console.log(`- ${label}: no source photo, skip`);
-      continue;
-    }
-
-    const shot = await generateProductShot(src.buffer, src.mime);
-    if (!shot) {
-      console.log(`! ${label}: generation failed — item left untouched`);
-      continue;
-    }
-    generated++;
-
-    // Archive the raw generation (provenance/history), never served.
-    const archiveDir = path.join(generatedRoot, item.id);
-    await saveBuffer(
-      path.join(archiveDir, `product-${sha256Of(shot.png).slice(0, 8)}.png`),
-      shot.png,
-    );
-
-    // Servable copy alongside the other roles.
     const dir = itemImageDir(item.id);
-    const genPath = path.join(dir, "generated_front.png");
-    await saveBuffer(genPath, shot.png);
-    upsertImage(item.id, "generated_front", genPath, shot.png);
+    let frontCutout: Cutout | null = null;
+    let frontGenerated: Buffer | null = null;
 
-    const cutout = await cutoutFromGenerated(shot.png);
-    if (cutout) {
-      const cutPath = path.join(dir, "transparent_front.png");
-      await saveBuffer(cutPath, cutout.png);
-      upsertImage(item.id, "transparent_front", cutPath, cutout.png);
-      const thumb = await makeThumbnail(cutout.png, { alpha: true });
-      const thumbPath = path.join(dir, "thumbnail.png");
-      await saveBuffer(thumbPath, thumb.buffer);
-      setThumbnail(item.id, thumbPath, thumb.buffer, thumb.width, thumb.height);
-      cutouts++;
-      console.log(`✓ ${label}: generated (${shot.model}) · cutout via ${cutout.how}`);
-    } else {
-      // No usable transparency: keep the existing cutout/thumbnail rather than
-      // downgrade the tile to a light-grey square on the black grid.
-      console.log(
-        `~ ${label}: generated (${shot.model}) but no cutout passed QA — kept previous thumbnail`,
+    for (const side of sides) {
+      const src = sourcePhoto(item.id, side);
+      if (!src) {
+        if (side === "front") console.log(`- ${label} (${side}): no source photo, skip`);
+        continue;
+      }
+
+      const shot = await generateProductShot(src.buffer, src.mime);
+      if (!shot) {
+        failed++;
+        console.log(`! ${label} (${side}): generation failed — left untouched`);
+        continue;
+      }
+      generated++;
+
+      // Archive the raw generation (provenance/history), never served.
+      await saveBuffer(
+        path.join(generatedRoot, item.id, `${side}-${sha256Of(shot.png).slice(0, 8)}.png`),
+        shot.png,
       );
+
+      const genPath = path.join(dir, `generated_${side}.png`);
+      await saveBuffer(genPath, shot.png);
+      upsertImage(item.id, `generated_${side}`, genPath, shot.png);
+
+      const cutout = await cutoutFromGenerated(shot.png);
+      if (cutout) {
+        if (cutout.clean) clean++;
+        const cutPath = path.join(dir, `transparent_${side}.png`);
+        await saveBuffer(cutPath, cutout.png);
+        upsertImage(item.id, `transparent_${side}`, cutPath, cutout.png);
+      }
+      console.log(
+        `${cutout?.clean ? "✓" : "~"} ${label} (${side}): ${shot.model} · ${cutout ? cutout.how : "no transparency"}`,
+      );
+
+      if (side === "front") {
+        frontCutout = cutout;
+        frontGenerated = shot.png;
+      }
+    }
+
+    // The tile follows the new front generation whenever we produced one.
+    if (frontGenerated) {
+      const how = await refreshThumbnail(item.id, dir, frontCutout, frontGenerated);
+      console.log(`  → tile: ${how}`);
     }
   }
 
-  console.log(`\nDone: ${generated}/${items.length} generated, ${cutouts} cutouts accepted`);
+  console.log(
+    `\nDone: ${generated} generated (${clean} clean cutouts), ${failed} failed. ` +
+      `Est. spend ~$${(generated * COST_PER_IMAGE).toFixed(2)}.`,
+  );
 }
 
 main().catch((e) => {

@@ -2,10 +2,14 @@
  * Product-shot regeneration with Gemini.
  *
  * Why this exists: real wardrobe photos (garment on a dark bedsheet, tripod and
- * feet in frame) defeat segmentation. Gemini cannot output transparency, so it
- * does not replace the cutout step — it replaces its INPUT: redraw the garment
- * as a clean studio shot on a seamless light background, which is the easy case
- * for `removeBackground()` + `cutoutQa`.
+ * feet in frame) defeat segmentation. So we redraw the garment as a clean studio
+ * shot instead of fighting the photo.
+ *
+ * The prompt asks for a real alpha channel FIRST — if the model honours it there
+ * is no cutout step at all. The flat-grey fallback exists because it is the easy
+ * case for `keyFlatBackground()`, and it is spelled out in detail because a
+ * single contact shadow or backdrop seam line is enough to block a flood fill
+ * (observed 2026-07-25: a 5px floor seam kept the bottom corners opaque).
  *
  * Fidelity is the whole point: the prompt forbids inventing anything the source
  * photo does not show. A generated image that looks great but isn't his shirt is
@@ -29,11 +33,21 @@ export function imageModels(): string[] {
   return DEFAULT_MODELS;
 }
 
-const PROMPT = `Recreate the garment in this photo as a clean e-commerce product photograph.
+const PROMPT = `Recreate the garment in this photo as a clean e-commerce product photograph
+with the background removed.
 
 Requirements:
-- Show ONLY the garment, laid flat and centered, filling most of the frame, shot straight on.
-- Background: FULLY TRANSPARENT (alpha channel, PNG). If a transparent background is not possible, use a perfectly uniform very light neutral grey (#f2f2f0) instead. No gradient, no props, no shadows cast onto the background, no floor line, no text, no watermark.
+- Output a PNG with a REAL ALPHA CHANNEL: every pixel that is not garment must be fully
+  transparent (alpha 0). The garment must be perfectly cut out, edge to edge.
+- If — and only if — you cannot emit transparency, fall back to a single perfectly flat
+  fill of very light neutral grey (#f2f2f0) behind the garment. In that case the fill must
+  be ONE uniform tone across the entire frame: no gradient, no vignette, no lighter or
+  darker patches, no drop shadow or contact shadow, no reflection, no surface or table, no
+  horizon/floor/wall seam line, no border or frame around the image, no rounded corners.
+  A single stray line or shaded corner ruins the cutout, so keep it absolutely flat.
+- Show ONLY the garment, laid flat and centered, filling most of the frame, shot straight
+  on, with a small even margin of empty background on all four sides.
+- No props, no text, no watermark, no logo overlay, no colour swatches, no size labels.
 - Remove the wearer, skin, hair, hands, feet, mannequin, hanger, tripod, stand, and every part of the room.
 - Preserve EXACTLY what the source shows: colour and shade, pattern, print placement and scale, silhouette, sleeve and hem length, collar and cuff construction, visible seams, buttons, zips, drawstrings, and any legible logo or text.
 - Do NOT invent, add, restyle, or "improve" anything: no new logos, no added text, no extra pockets or seams, no changed colour, no added folds or styling flourishes. If a detail is unclear in the source, omit it rather than guess.
