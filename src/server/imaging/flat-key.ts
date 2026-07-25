@@ -17,6 +17,11 @@ export interface FlatKeyOptions {
   tolerance?: number;
   /** Soften the alpha edge by this blur sigma (0 = hard edge). */
   feather?: number;
+  /**
+   * Shrink the kept region by this many pixels before feathering. Non-zero by
+   * default and load-bearing for how the catalog looks — see erodeKept().
+   */
+  erode?: number;
 }
 
 export interface FlatKeyResult {
@@ -83,9 +88,38 @@ function dropStrayBlobs(cleared: Uint8Array, w: number, h: number): void {
   }
 }
 
+/**
+ * Shrink the kept region by one pixel.
+ *
+ * The boundary ring the flood fill keeps is not garment — each of those pixels
+ * is a camera/codec blend of garment and the light backdrop. Feathering makes
+ * them translucent but cannot fix their COLOUR, so composited onto the dark
+ * catalog grid they read as a bright outline around every item (measured
+ * 2026-07-25: edge pixels at luminance 158 against a garment at 30). Dropping
+ * the ring costs a pixel of garment and removes the halo.
+ */
+function erodeKept(cleared: Uint8Array, w: number, h: number): void {
+  const ring: number[] = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (cleared[p]) continue;
+      if (
+        (x > 0 && cleared[p - 1]) ||
+        (x < w - 1 && cleared[p + 1]) ||
+        (y > 0 && cleared[p - w]) ||
+        (y < h - 1 && cleared[p + w])
+      ) {
+        ring.push(p);
+      }
+    }
+  }
+  for (const p of ring) cleared[p] = 1;
+}
+
 export async function keyFlatBackground(
   input: Buffer,
-  { tolerance = 30, feather = 0.6 }: FlatKeyOptions = {},
+  { tolerance = 30, feather = 0.6, erode = 2 }: FlatKeyOptions = {},
 ): Promise<FlatKeyResult | null> {
   const { data, info } = await sharp(input)
     .removeAlpha()
@@ -156,6 +190,18 @@ export async function keyFlatBackground(
 
   dropStrayBlobs(cleared, w, h);
 
+  // Judge the KEYING before eroding. Erosion always trims the boundary ring, so
+  // measuring after it would report ~3% removed on an image where the flood fill
+  // achieved nothing — turning a clean failure into a plausible-looking success.
+  let keyed = 0;
+  for (let p = 0; p < w * h; p++) if (cleared[p]) keyed++;
+  const keyedFraction = 1 - keyed / (w * h);
+  // Nothing removed (background didn't match) or nearly everything removed
+  // (garment same colour as background) — let the caller try something else.
+  if (keyedFraction > 0.97 || keyedFraction < 0.02) return null;
+
+  for (let i = 0; i < erode; i++) erodeKept(cleared, w, h);
+
   let clearedCount = 0;
   const alpha = Buffer.alloc(w * h);
   for (let p = 0; p < w * h; p++) {
@@ -163,9 +209,6 @@ export async function keyFlatBackground(
     else alpha[p] = 255;
   }
   const keptFraction = 1 - clearedCount / (w * h);
-  // Nothing removed (background didn't match) or nearly everything removed
-  // (garment same colour as background) — let the caller try something else.
-  if (keptFraction > 0.97 || keptFraction < 0.02) return null;
 
   // toColourspace("b-w") is load-bearing: sharp runs operations in sRGB, so
   // blurring a 1-channel raw buffer hands back THREE channels. Joining that as

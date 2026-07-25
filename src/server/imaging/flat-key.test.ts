@@ -73,13 +73,48 @@ describe("keyFlatBackground", () => {
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     }
-    // The garment box is (30,30)-(89,89); feathering may shift edges by a pixel.
+    // The garment box is (30,30)-(89,89). Erosion pulls each edge in a couple of
+    // pixels by design, so bound the mask from BOTH sides: a sheared mask lands
+    // nowhere near these, while a correct one sits just inside the box.
     expect(minX).toBeGreaterThanOrEqual(29);
+    expect(minX).toBeLessThanOrEqual(35);
     expect(minY).toBeGreaterThanOrEqual(29);
+    expect(minY).toBeLessThanOrEqual(35);
     expect(maxX).toBeLessThanOrEqual(90);
+    expect(maxX).toBeGreaterThanOrEqual(84);
     expect(maxY).toBeLessThanOrEqual(90);
-    expect(maxX - minX).toBeGreaterThan(55);
-    expect(maxY - minY).toBeGreaterThan(55);
+    expect(maxY).toBeGreaterThanOrEqual(84);
+  });
+
+  // Regression (2026-07-25): the kept boundary ring is a blend of garment and
+  // backdrop, so on the dark catalog grid every item wore a bright outline.
+  it("leaves no bright halo around a dark garment on a light backdrop", async () => {
+    const img = await shot({ bg: "#f2f2f0", fg: "#1a1a1a" });
+    const out = await keyFlatBackground(img);
+    expect(out).not.toBeNull();
+
+    const { data, info } = await sharp(out!.png)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let edgeN = 0, edgeLum = 0, solidN = 0, solidLum = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+      const a = data[i + 3]!;
+      const lum = (data[i]! + data[i + 1]! + data[i + 2]!) / 3;
+      if (a > 40 && a < 200) {
+        edgeN++;
+        edgeLum += lum;
+      } else if (a >= 200) {
+        solidN++;
+        solidLum += lum;
+      }
+    }
+    expect(solidN).toBeGreaterThan(0);
+    const solid = solidLum / solidN;
+    if (edgeN > 0) {
+      // Partly-transparent pixels must be garment-coloured, not backdrop-coloured.
+      expect(edgeLum / edgeN).toBeLessThan(solid + 60);
+    }
   });
 
   it("drops stray marks left on the backdrop", async () => {
