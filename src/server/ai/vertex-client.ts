@@ -103,7 +103,9 @@ export async function generateContent(opts: GenerateOptions): Promise<GenerateRe
 
     const text = await res.text().catch(() => "");
     // 404/400 usually means "this model id doesn't exist here" — try the next.
-    failures.push(`${model}: HTTP ${res.status} ${text.slice(0, 300)}`);
+    // Keep plenty of the body: quota/permission errors name the exact limit,
+    // and truncating that turns a 30-second diagnosis into guesswork.
+    failures.push(`${model}: HTTP ${res.status} ${text.replace(/\s+/g, " ").slice(0, 1200)}`);
     if (res.status === 401 || res.status === 403) break; // auth problem: no point probing further
   }
 
