@@ -1,0 +1,24 @@
+#!/bin/sh
+# Is the PUBLIC URL actually serving? Not "is funnel configured" — that lies.
+#
+# Run by psos-funnel.service after each re-registration. Retries because the
+# ingress can take a few seconds to start routing a freshly registered node.
+# Never fails the unit: a failed check must not stop the VM from booting, it
+# just needs to be loud in the journal.
+
+HOST=psos.tail620d1e.ts.net
+
+i=1
+while [ "$i" -le 6 ]; do
+  code=$(curl -4 -s -o /dev/null -m 20 -w '%{http_code}' "https://$HOST/login" 2>/dev/null)
+  if [ "$code" = "200" ]; then
+    logger -t psos-funnel "public URL OK (https://$HOST -> $code) after $i attempt(s)"
+    exit 0
+  fi
+  logger -t psos-funnel "attempt $i: https://$HOST returned '$code' - retrying"
+  i=$((i + 1))
+  sleep 10
+done
+
+logger -t psos-funnel "WARNING: public URL still not serving after 6 attempts. Try: sudo tailscale funnel --https=443 off && sudo systemctl restart tailscaled && sudo tailscale funnel --bg 3000"
+exit 0
