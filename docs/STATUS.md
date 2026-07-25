@@ -32,9 +32,9 @@ hits the VM directly.
 | App on VM | **`https://psos.tail620d1e.ts.net`** via Tailscale Funnel |
 | Password gate | **ACTIVE.** Root-owned `/etc/psos.env` via `EnvironmentFile`; no rebuild needed (verified). Rotate with `psos-set-password` on the VM |
 | Login brute-force cost | Progressive delay on `/api/auth/login`, deliberately **not** a lockout. `x-forwarded-for` trusted only when `PSOS_BEHIND_TLS=1` |
-| Firewall `psos-app` | tcp:3000 from `0.0.0.0/0` — **to be deleted** once Funnel has survived two reboots |
+| Inbound firewall | **None.** `psos-app` (tcp:3000) and `psos-allow-web` (tcp:80/443) both deleted 2026-07-26 — Funnel dials out, so no port is open to the app. `default-allow-ssh` stays as the recovery path |
 | Billing account `01BB42-93FE43-97EFA2` | Open; trial-upgrade credit valid to 2026-10-14 |
-| Static IP `34.100.219.116` | Attached to `psos-1`. **To be released** (ephemeral instead) after the two-reboot proof |
+| External IP | **Ephemeral** (`35.244.15.32` today, changes on stop/start — nothing depends on it). Static `34.100.219.116` released 2026-07-26 |
 | VM shutdown | 60-min autostop at boot as backstop, plus a 30-min keepalive check (`psos-keepalive.timer`) that cancels it while there is work or a human |
 | VM config in git | `deploy/vm/` — units, keepalive script, install steps |
 | BiRefNet segmentation | **Dropped** as a direction; opt-in via `PSOS_BG_ENGINE=birefnet`, imgly is the default |
@@ -125,7 +125,41 @@ Verified against the real API / real images, in order:
     each 30-minute check pushes the deadline 40 minutes out in perpetuity. The check must no-op
     when a poweroff is already scheduled. Caught in design, not in the bill.
 
-16. **The back photo never reaches the catalog tile.** Traced every consumer: the back feeds the
+16. **The catalog is 15 items, not 26 — and 4 of the 15 have broken cutouts.** First contact
+    sheet (`scripts/contact-sheet.ts`) of the whole wardrobe. States: 15 active, 20 archived,
+    1 draft. Twelve of the archived are the original seed placeholders, correctly gone. But:
+
+    - **Both copies of the Indigo Block-Print Kurta Shirt are archived**, so that garment is
+      missing from the catalog entirely — deduping took out the original as well as the copy.
+    - **Two active items have no name and no category** (created 2026-07-17): the cap and the
+      checked shirt. AI metadata never landed on them.
+    - **"Black Patch Detail Sweatshirt" has been stuck in `draft` since 2026-07-25 17:34** — the
+      test upload from that session, never confirmed into the catalog.
+    - `Maroon Jockey Boxer Briefs` is categorised **accessory**; its three siblings are `bottom`.
+
+17. **The broken cutouts are all LIGHT-COLOURED garments, and the flood fill is eating them.**
+    [Certain — measured.] The four damaged tiles are the cream cap (a whole slab of background
+    retained above it), the white checked shirt (bites out of the sleeve), the white Levi's
+    briefs (ragged all round) and the cream Kiprun tee (a chunk gone from the shoulder). The
+    other eleven — all dark or saturated — are clean.
+
+    Measured on the Kiprun tee's `generated_front.png`: the backdrop corner the fill seeds from
+    is **rgb(230,230,230)**, and garment-body pixels sit at **rgb(206–213, 203–208, 191–195)**.
+    `keyFlatBackground` uses `tolerance = 30` compared as squared Euclidean
+    (`tol² = 30²·3 = 2700`, a radius of ~52 RGB units), and those garment pixels come out at
+    **1998–2674 — all under 2700**. So the fill treats the garment as backdrop. Because the fill
+    is connectivity-based, one pixel of entry is enough to hollow out a whole region, which is
+    exactly the shape of the damage.
+
+    Note how thin the margin is: 2657 vs 2700. Nudging the tolerance down would "fix" these four
+    and break on the next garment — the real problem is that a pale garment on a pale backdrop
+    is genuinely ambiguous. The structural fix is to stop asking for a light backdrop and ask
+    for a **chroma-key colour no garment is near** (saturated green/magenta); the existing 2px
+    erosion already handles the colour spill that would cause. Costs a prompt change and a
+    regeneration of the affected items. **This will hit every white shirt in the next bulk
+    upload**, so it is worth doing before the batch, not after.
+
+18. **The back photo never reaches the catalog tile.** Traced every consumer: the back feeds the
     garment box, a *second* Gemini image call, a back cutout, and a second image on the metadata
     call — but `bestFront()` is front-only by construction. `describeInput()`
     (`ai/extraction.ts:214`) already emits *"it shows the FRONT only; there is no back image"*
@@ -199,18 +233,17 @@ See `deploy/vm/README.md` for the units, the install steps and the Tailscale got
 
 Highest value first:
 
-1. **Tear down the raw-IP path** — only after Funnel has survived **two** reboots, because
-   closing the firewall before it has proven itself locks him out with only `gcloud ssh` to
-   recover. Then `gcloud compute firewall-rules delete psos-app`, swap the static IP for
-   ephemeral, release `34.100.219.116`, and rewrite `scripts/vm-start.cmd` (it currently `curl`s
-   the external IP **from the laptop**, which both breaks when the IP goes and violates the
-   no-external-HTTP rule).
-2. **Catalog the rest of the wardrobe, front-only.** The pipeline is ready and one-shot per
+1. **Fix the light-garment cutout failure** (finding 17) — 4 of 15 tiles are damaged and every
+   white shirt in the next batch will hit it. Confirm with `scripts/cutout-diag.ts` first, then
+   the likely fix is in `imaging/flat-key.ts` (tolerance is tuned for dark garments on a light
+   backdrop) or in the prompt's choice of backdrop tone. Also worth checking whether these
+   failed `cutoutQa` and were accepted on rung 4 with only a logged warning.
+2. **Housekeeping from the contact sheet** (finding 16): un-archive one Indigo Block-Print
+   Kurta, name + categorise the two unnamed items, resolve or discard the stuck draft, and move
+   `Maroon Jockey Boxer Briefs` off `accessory`.
+3. **Catalog the rest of the wardrobe, front-only.** The pipeline is ready and one-shot per
    garment; this is photo-taking work now, not engineering work. Front-only halves the image
-   calls and the quota stalling (finding 16).
-3. Quality follow-ups from the regeneration: the cap's cutout had speckle artifacts along the
-   top edge, and the blue block-print kurta looks like two duplicate items (archive one).
-   Re-check both on a contact sheet of the re-run.
+   calls and the quota stalling (finding 18).
 4. **UI redesign (Phase C).** Deferred by Dinesh 2026-07-26, not dropped. Measured complaint:
    12 motion-related utilities across 1,958 lines of TSX, no animation library — but the real
    cause is structural, not decorative: every screen is `"use client"` + fetch-after-hydration,

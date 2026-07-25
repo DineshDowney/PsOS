@@ -1,32 +1,36 @@
 @echo off
-rem Start the psos VM, wait for the app, print (and open) the fresh URL.
-rem The VM auto-powers-off 3 hours after boot (psos-autostop.service).
-setlocal enabledelayedexpansion
+rem Start the psos VM and open the app.
+rem
+rem The URL is FIXED: Tailscale Funnel binds it to the machine name, not to the
+rem IP, so it survives every reboot and the ephemeral-IP change. Nothing here
+rem needs to look an address up any more.
+rem
+rem This script deliberately does NOT poll the app to see if it is up. Doing that
+rem from this laptop means an HTTP request to an external host, which set off
+rem corporate EDR once already (SIR0886312). The browser opening a moment early
+rem is a refresh; a security incident is not.
+rem
+rem Power-off: 60 min after boot, unless something holds it awake -- an import
+rem queue that is still draining, you actually using the app, or Settings ->
+rem Hold for 4 hours. See deploy/vm/README.md.
+setlocal
 set GCLOUD=%LOCALAPPDATA%\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd
 set PROJ=project-e8b8d084-2a42-47ca-996
 set ZONE=asia-south1-a
+set URL=https://psos.tail620d1e.ts.net
 
-echo Starting psos-1 (auto-off in 3h)...
+echo Starting psos-1...
 call "%GCLOUD%" compute instances start psos-1 --project=%PROJ% --zone=%ZONE% || goto :fail
 
-for /f "delims=" %%i in ('call "%GCLOUD%" compute instances describe psos-1 --project^=%PROJ% --zone^=%ZONE% --format^="value(networkInterfaces[0].accessConfigs[0].natIP)"') do set IP=%%i
-echo VM IP: !IP!
-
-echo Waiting for the app (up to ~2 min)...
-for /l %%n in (1,1,24) do (
-  curl -s -o nul -m 4 http://!IP!:3000/api/items && goto :up
-  timeout /t 5 /nobreak > nul
-)
-echo App did not respond yet - give it another minute, then open http://!IP!:3000
-goto :end
-
-:up
-echo App is UP: http://!IP!:3000
-start http://!IP!:3000
+echo.
+echo VM started. The app needs ~60-90s to boot.
+echo   %URL%
+echo.
+start %URL%
 goto :end
 
 :fail
-echo Failed to start the VM. Run this script again or check GCP console.
+echo Failed to start the VM. Run this again, or check the GCP console.
 
 :end
 endlocal
