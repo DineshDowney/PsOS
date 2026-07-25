@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearLoginFailures,
   loginDelayMs,
@@ -40,8 +40,27 @@ describe("login throttle", () => {
     expect(loginDelayMs("a", later)).toBe(0);
   });
 
-  it("prefers the first x-forwarded-for hop, else a shared bucket", () => {
-    expect(loginKey(new Headers({ "x-forwarded-for": "1.2.3.4, 5.6.7.8" }))).toBe("1.2.3.4");
-    expect(loginKey(new Headers())).toBe("shared");
+  describe("loginKey", () => {
+    const saved = process.env.PSOS_BEHIND_TLS;
+    afterEach(() => {
+      if (saved === undefined) delete process.env.PSOS_BEHIND_TLS;
+      else process.env.PSOS_BEHIND_TLS = saved;
+    });
+
+    it("ignores x-forwarded-for when nothing trusted is in front of us", () => {
+      // Served directly, the header is attacker-supplied — per-IP buckets would
+      // let a guesser rotate the key on every request.
+      delete process.env.PSOS_BEHIND_TLS;
+      expect(loginKey(new Headers({ "x-forwarded-for": "1.2.3.4" }))).toBe("shared");
+    });
+
+    it("takes the LAST hop behind a trusted proxy, not the client-supplied first", () => {
+      process.env.PSOS_BEHIND_TLS = "1";
+      // "9.9.9.9" is whatever the client sent; "5.6.7.8" is what our proxy appended.
+      expect(loginKey(new Headers({ "x-forwarded-for": "9.9.9.9, 5.6.7.8" }))).toBe("5.6.7.8");
+      // A proxy that replaces rather than appends works too.
+      expect(loginKey(new Headers({ "x-forwarded-for": "5.6.7.8" }))).toBe("5.6.7.8");
+      expect(loginKey(new Headers())).toBe("shared");
+    });
   });
 });

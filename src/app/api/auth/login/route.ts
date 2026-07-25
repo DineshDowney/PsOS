@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
+  behindTrustedProxy,
   clearLoginFailures,
   loginDelayMs,
   loginKey,
@@ -64,8 +65,10 @@ export async function POST(req: Request) {
     sameSite: "lax",
     path: "/",
     maxAge: COOKIE_MAX_AGE,
-    // NOT `secure`: the deployed instance serves plain HTTP on the VM today.
-    // Flip to secure: true when the app moves behind TLS (tunnel/domain).
+    // Conditional, not hardcoded: `secure` would make the cookie unsettable over
+    // plain HTTP, which is exactly how local `npm run dev` runs. PSOS_BEHIND_TLS=1
+    // on the VM, where Tailscale Funnel terminates TLS in front of us.
+    secure: behindTrustedProxy(),
   });
   return res;
 }

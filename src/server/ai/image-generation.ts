@@ -24,6 +24,7 @@
  * a failure, not a win.
  */
 import { generateContent, firstImage, inlineImage } from "@/server/ai/vertex-client";
+import { createLimiter } from "@/server/lib/limiter";
 
 // Verified against `listModels()` on 2026-07-25. Cheap-first: flash-image tiers
 // before the pro/nano-banana-pro tiers.
@@ -93,12 +94,31 @@ export interface ProductShotResult {
 }
 
 /**
+ * One image call at a time, process-wide.
+ *
+ * The image models are rate-limited per MINUTE, and the import queue runs two
+ * pipelines concurrently — so two simultaneous calls mostly buy two 429s and
+ * two backoff sleeps (20s/45s/90s each). Strictly sequential finishes a batch
+ * sooner than parallel-with-backoff, and it costs nothing when only one import
+ * is in flight. Deliberately wraps ONLY the image call: the rest of each
+ * pipeline stays concurrent.
+ */
+const imageCallLimiter = createLimiter(1);
+
+/**
  * Generate a clean product shot from a garment crop. Returns null when the
  * model declines or returns no image — callers keep whatever they already had.
  */
 export async function generateProductShot(
   crop: Buffer,
   mimeType = "image/jpeg",
+): Promise<ProductShotResult | null> {
+  return imageCallLimiter(() => generateProductShotNow(crop, mimeType));
+}
+
+async function generateProductShotNow(
+  crop: Buffer,
+  mimeType: string,
 ): Promise<ProductShotResult | null> {
   try {
     const result = await generateContent({
