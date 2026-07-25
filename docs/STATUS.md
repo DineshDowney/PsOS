@@ -14,8 +14,9 @@ from the laptop.
 | Thing | State |
 |---|---|
 | Billing account `01BB42-93FE43-97EFA2` | **Reopened** by Dinesh — `open: true`, project link `billingEnabled: true` |
-| Gemini image generation | **Working.** First real generation is faithful and clean (ombre blue tee) |
+| Gemini image generation | **Working** and faithful |
 | Cutout from generated shot | **Fixed** — was a sharp bug, see finding 8 |
+| **Wardrobe regenerated** | **Done 2026-07-25: 24/24 images (16 fronts + 8 backs), 24 clean cutouts, 0 failures, ~$0.96.** Every item's catalog tile is now a generated transparent cutout |
 | Front + back regeneration | Built (`--side` to restrict; both by default) |
 | Catalog tile follows the new generation | Built — the tile is always repointed at the fresh image |
 | App on VM | Running (`systemctl is-active psos` → active) at `http://34.100.219.116:3000` |
@@ -59,6 +60,15 @@ Verified against the real API / real images, in order:
    never touched the broken path). Same family as the `removeAlpha()` + `joinChannel()` trap
    in `thumbnails.ts` — **sharp chains silently change channel counts; always assert.**
 
+9. **Vertex image models are rate-limited per minute, and it bites hard in a batch.**
+   The first full run generated 14 of 24 images and lost the other 10 to HTTP 429
+   `RESOURCE_EXHAUSTED` — a QPM limit, not billing. Fixed properly: `generateContent()`
+   now retries the SAME model on 429/5xx with 20s/45s/90s backoff (honouring `Retry-After`),
+   and the batch paces itself (`--delay`, default 5s). Retrying the same model matters —
+   falling through to other candidates just spreads load onto equally throttled models.
+   The retry run then completed 10/10. Two 429s still occurred mid-run and were simply
+   waited out.
+
 ## Image pipeline as built
 
 `front_cropped` / `back_cropped` → Gemini product shot → cutout ladder:
@@ -83,6 +93,7 @@ up on the new image — `mapImage()` cache-busts with `?v=<sha256>`, so browsers
 npx tsx scripts/regenerate-images.ts --dry-run          # count + cost estimate, no spend
 npx tsx scripts/regenerate-images.ts --limit 1          # one item, eyeball it first
 npx tsx scripts/regenerate-images.ts                    # everything, front + back
+npx tsx scripts/regenerate-images.ts --missing          # retry only what has no generation yet
 npx tsx scripts/regenerate-images.ts --only <itemId>    # redo one item
 npx tsx scripts/cutout-diag.ts <image>                  # why didn't this become a cutout?
 ```
@@ -104,7 +115,12 @@ npx tsx scripts/cutout-diag.ts <image>                  # why didn't this become
 
 - **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
   `instances.start`, so hitting a URL from the phone boots the VM; open the app ~5 min later.
-- Set `PSOS_PASSWORD` in the VM systemd unit (value from Dinesh, never via chat).
+- **Open the app to the internet, password first** (Dinesh's call, 2026-07-25). The unit now
+  has `EnvironmentFile=-/etc/psos.env` and `/usr/local/bin/psos-set-password` prompts for the
+  value on the VM, so the password never passes through a transcript. Remaining: he runs it,
+  then the `psos-app` firewall source range goes to `0.0.0.0/0` — **in that order**, and
+  confirm `/wardrobe` returns 307 before opening (if it does not, the middleware needs a
+  rebuild, since Next can inline env vars into the middleware bundle at build time).
 - Retry for partially-failed import jobs (stage failed but job `ready_for_review`).
 - Category taxonomy pass (underwear → "accessory" vs "bottom" wobble).
 - Cloudflare Tunnel + domain (kills IP-allowlist churn, HTTPS, phone-anywhere).

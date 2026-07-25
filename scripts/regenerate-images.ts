@@ -17,7 +17,10 @@
  * VM-only by intent (Vertex credentials live there).
  *
  * Run: npx tsx scripts/regenerate-images.ts [--dry-run] [--only <itemId>]
- *                                           [--limit N] [--side front|back]
+ *          [--limit N] [--side front|back] [--missing] [--delay <ms>]
+ *
+ * `--missing` skips sides that already have a generation — that is the retry
+ * flag after a partial run, and it never re-spends on work that succeeded.
  */
 import path from "node:path";
 import fs from "node:fs";
@@ -92,6 +95,16 @@ function setThumbnail(itemId: string, absPath: string, buffer: Buffer, w: number
   } else {
     upsertImage(itemId, "thumbnail", absPath, buffer);
   }
+}
+
+/** Has this side already been generated (and the file survived)? */
+function alreadyGenerated(itemId: string, side: Side): boolean {
+  const row = imageRow(itemId, `generated_${side}`);
+  return !!row && fs.existsSync(resolveImagePath(row.path));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 /** Best available source photo for a side: the tight crop, else the original. */
@@ -183,6 +196,14 @@ async function main() {
   const limit = arg("--limit") ? Number(arg("--limit")) : undefined;
   const sideArg = arg("--side") as Side | undefined;
   const sides: Side[] = sideArg ? [sideArg] : ["front", "back"];
+  const missingOnly = args.includes("--missing");
+  // Image-model quota is per-minute; pacing costs a few minutes and avoids the
+  // 429 storm that failed 10 of 24 images on the first full run.
+  const delayMs = arg("--delay") ? Number(arg("--delay")) : 5_000;
+
+  /** Sides worth attempting for an item, honouring --missing. */
+  const todo = (itemId: string): Side[] =>
+    sides.filter((s) => sourcePhoto(itemId, s) && !(missingOnly && alreadyGenerated(itemId, s)));
 
   if (!dryRun && !hasVertexKey()) {
     console.error("No Vertex credentials (expected VERTEX_USE_ADC=1 or a key in .env.local) — nothing to do.");
@@ -196,10 +217,10 @@ async function main() {
   if (dryRun) {
     let shots = 0;
     for (const item of items) {
-      const present = sides.filter((s) => sourcePhoto(item.id, s));
+      const present = todo(item.id);
       shots += present.length;
       console.log(
-        `- ${item.name || item.id.slice(0, 8)}: ${present.length ? present.join(" + ") : "NO SOURCE PHOTO, would skip"}`,
+        `- ${item.name || item.id.slice(0, 8)}: ${present.length ? present.join(" + ") : "nothing to do"}`,
       );
     }
     console.log(
@@ -210,6 +231,7 @@ async function main() {
 
   console.log(`${items.length} item(s) × [${sides.join(", ")}]`);
   const generatedRoot = path.join(dataDir, "generated");
+  let attempts = 0;
   let generated = 0;
   let clean = 0;
   let failed = 0;
@@ -220,12 +242,16 @@ async function main() {
     let frontCutout: Cutout | null = null;
     let frontGenerated: Buffer | null = null;
 
-    for (const side of sides) {
-      const src = sourcePhoto(item.id, side);
-      if (!src) {
-        if (side === "front") console.log(`- ${label} (${side}): no source photo, skip`);
-        continue;
-      }
+    const wanted = todo(item.id);
+    if (wanted.length === 0) {
+      console.log(`- ${label}: nothing to do`);
+      continue;
+    }
+
+    for (const side of wanted) {
+      const src = sourcePhoto(item.id, side)!;
+      if (attempts > 0 && delayMs > 0) await sleep(delayMs);
+      attempts++;
 
       const shot = await generateProductShot(src.buffer, src.mime);
       if (!shot) {

@@ -115,6 +115,29 @@ async function requestTarget(model: string): Promise<{ url: string; headers: Rec
   return { url: `${HOST}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, headers };
 }
 
+/** Worth waiting out rather than failing the item. */
+const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
+/** Generous, because image-model quota is per-minute. */
+const RETRY_DELAYS_MS = [20_000, 45_000, 90_000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function backoff(
+  model: string,
+  why: string,
+  attempt: number,
+  retryAfter: string | null,
+): Promise<void> {
+  const header = retryAfter ? Number(retryAfter) * 1000 : NaN;
+  const wait = Number.isFinite(header) && header > 0 ? header : RETRY_DELAYS_MS[attempt]!;
+  console.error(
+    `[psos] ${model}: ${why} — waiting ${Math.round(wait / 1000)}s (retry ${attempt + 1}/${RETRY_DELAYS_MS.length})`,
+  );
+  await sleep(wait);
+}
+
 /** Model that worked last, per process — avoids re-probing dead candidates. */
 const resolved = new Map<string, string>();
 
@@ -140,27 +163,48 @@ export async function generateContent(opts: GenerateOptions): Promise<GenerateRe
 
   const failures: string[] = [];
   for (const model of queue) {
-    let res: Response;
-    try {
-      const { url, headers } = await requestTarget(model);
-      res = await fetch(url, { method: "POST", headers, body });
-    } catch (err) {
-      failures.push(`${model}: network error ${err instanceof Error ? err.message : err}`);
-      continue;
+    let authFailed = false;
+
+    for (let attempt = 0; ; attempt++) {
+      let res: Response;
+      try {
+        const { url, headers } = await requestTarget(model);
+        res = await fetch(url, { method: "POST", headers, body });
+      } catch (err) {
+        const msg = `network error ${err instanceof Error ? err.message : err}`;
+        if (attempt < RETRY_DELAYS_MS.length) {
+          await backoff(model, msg, attempt, null);
+          continue;
+        }
+        failures.push(`${model}: ${msg}`);
+        break;
+      }
+
+      if (res.ok) {
+        resolved.set(cacheKey(opts.models), model);
+        const json = (await res.json()) as GenerateResult;
+        return { ...json, model };
+      }
+
+      const text = await res.text().catch(() => "");
+      // Transient: the image models have a low per-minute quota, so a 429 in a
+      // batch means "slow down", not "give up" — 10 of 24 items failed this way
+      // on 2026-07-25 before backoff existed. Retry the SAME model; switching
+      // candidates would only spread the load onto other rate-limited models.
+      if (TRANSIENT_STATUSES.has(res.status) && attempt < RETRY_DELAYS_MS.length) {
+        await backoff(model, `HTTP ${res.status}`, attempt, res.headers.get("retry-after"));
+        continue;
+      }
+
+      // 404/400 usually means "this model id doesn't exist here" — try the next.
+      // Keep plenty of the body: quota/permission errors name the exact limit,
+      // and truncating that turns a 30-second diagnosis into guesswork.
+      failures.push(`${model}: HTTP ${res.status} ${text.replace(/\s+/g, " ").slice(0, 1200)}`);
+      if (res.status === 401 || res.status === 403) authFailed = true;
+      break;
     }
 
-    if (res.ok) {
-      resolved.set(cacheKey(opts.models), model);
-      const json = (await res.json()) as GenerateResult;
-      return { ...json, model };
-    }
-
-    const text = await res.text().catch(() => "");
-    // 404/400 usually means "this model id doesn't exist here" — try the next.
-    // Keep plenty of the body: quota/permission errors name the exact limit,
-    // and truncating that turns a 30-second diagnosis into guesswork.
-    failures.push(`${model}: HTTP ${res.status} ${text.replace(/\s+/g, " ").slice(0, 1200)}`);
-    if (res.status === 401 || res.status === 403) break; // auth problem: no point probing further
+    if (authFailed) break; // auth problem: no point probing further
   }
 
   throw new Error(`Vertex generateContent failed.\n${failures.join("\n")}`);
