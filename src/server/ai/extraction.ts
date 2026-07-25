@@ -103,17 +103,35 @@ const extractionSchema = z.object({
   bbox_back: bboxSchema,
 });
 
-/**
- * @param imageRef how the prompt should refer to the photos: file paths (Claude
- * reads them) or a sentence about attached images (Gemini gets them inline).
- */
-function buildPrompt(imageRef: string, dominant: DominantColor[]): string {
+interface PromptOptions {
+  /**
+   * How the prompt should refer to the photos: file paths (Claude reads them) or
+   * a sentence about attached images (Gemini gets them inline).
+   */
+  imageRef: string;
+  dominant: DominantColor[];
+  /**
+   * Ask for garment boxes too. False when the input is an already-cropped or
+   * generated product shot, where a box is meaningless — the pipeline gets its
+   * boxes from `extractBoundingBox` on the ORIGINAL photos instead, so each call
+   * has exactly one job.
+   */
+  withBoxes: boolean;
+}
+
+function buildPrompt({ imageRef, dominant, withBoxes }: PromptOptions): string {
   const dominantNote =
     dominant.length > 0
-      ? `Pixel analysis of the (background-removed) photo reports these dominant colors: ${dominant
+      ? `Pixel analysis of this garment reports these dominant colours: ${dominant
           .map((d) => `${d.hex} (${Math.round(d.fraction * 100)}%)`)
-          .join(", ")}. Use this as a cross-check when naming colors.`
+          .join(", ")}. Use it as a cross-check when naming colours, not as the answer.`
       : "";
+
+  const boxKeys = withBoxes
+    ? `,
+  "bbox": { "x": number, "y": number, "w": number, "h": number } | null,  // ${BOX_INSTRUCTION}
+  "bbox_back": { same shape } | null  // same, but for the BACK photo; null when no back photo given`
+    : "";
 
   return `You are cataloguing one clothing item for a personal wardrobe app.
 ${imageRef}
@@ -122,30 +140,49 @@ ${dominantNote}
 
 Return ONLY a JSON object (no prose before or after) with exactly these keys:
 {
-  "name": string,                    // short display name, e.g. "White Oxford Shirt"
+  "name": string,                    // see the naming rule below
   "category": ${JSON.stringify(CATEGORIES)} | null,
   "subcategory": string | null,      // e.g. "t-shirt", "chinos", "sneakers"
   "description": string | null,      // 1-2 sentences, plain and factual
-  "primary_color": string | null,    // common color name
+  "primary_color": string | null,    // one common colour name
   "secondary_colors": string[],
-  "color_detail": string | null,     // nuanced description, e.g. "washed light blue"
-  "pattern": string | null,          // e.g. "solid", "striped", "checked"
+  "color_detail": string | null,     // nuance, e.g. "washed indigo fading to sky blue"
+  "pattern": string | null,          // e.g. "solid", "striped", "checked", "block print"
   "fit": string | null,              // e.g. "slim", "regular", "oversized" — only if visually evident
   "material": string | null,         // ONLY if reasonably inferable from texture/sheen; else null
-  "brand": string | null,            // ONLY if a logo/label is clearly visible; else null
+  "brand": string | null,            // ONLY if a logo/label is clearly legible; else null
   "formality": ${JSON.stringify(FORMALITIES)} | null,
   "seasons": ${JSON.stringify(SEASONS)} (multi-select, [] if unclear),
   "tags": string[],                  // 3-8 lowercase style tags, e.g. ["minimal","streetwear","layering"]
-  "confidence": { [field]: number }, // 0-1 per field you filled
-  "bbox": { "x": number, "y": number, "w": number, "h": number } | null,  // ${BOX_INSTRUCTION}
-  "bbox_back": { same shape } | null  // same, but for the BACK photo; null when no back photo given
+  "confidence": { [field]: number }  // 0-1 per field you filled${boxKeys}
 }
 
 Rules:
-- Correctness over completeness: use null when not reasonably inferable. Never guess brand or material.
-- Judge colors from the garment itself, ignoring background and skin.
-- "category" must be one of the allowed values ("full_body" = dresses, jumpsuits, overalls).
-- bbox: ${BOX_INSTRUCTION}`;
+- Correctness over completeness: use null when not reasonably inferable. Never guess brand
+  or material. A null is more useful than a plausible invention.
+- NAME: 2-4 words, Title Case, shaped as [distinguishing detail] [colour] [garment type] —
+  e.g. "Faded Black Crewneck", "Indigo Block-Print Kurta", "Ombré Blue Athletic Tee".
+  Never put the brand in the name (it has its own field). No filler adjectives ("nice",
+  "stylish"), no size, no condition. Every item in this wardrobe is named this way, so keep
+  the shape consistent — these names are read side by side in a grid.
+- COLOUR: judge the garment's own colour, ignoring background, skin and lighting. Prefer a
+  specific everyday name ("charcoal", "rust", "olive", "ecru") over a vague one ("dark",
+  "multi", "light"). Keep "primary_color" to a single plain name and put the nuance,
+  gradients and ombré transitions in "color_detail".
+- CATEGORY must be one of the allowed values. Disambiguation, since these recur:
+  - t-shirts, shirts, kurtas, sweatshirts, hoodies, vests worn as the main layer -> "top"
+  - trousers, jeans, shorts, boxers, briefs, trunks, any underwear bottom -> "bottom"
+  - dresses, jumpsuits, overalls, co-ord sets worn as one piece -> "full_body"
+  - jackets, coats, blazers, overshirts worn OVER a top -> "outerwear"
+  - shoes, sneakers, sandals, slippers, boots -> "footwear"
+  - caps, hats, belts, socks, bags, watches, scarves, sunglasses -> "accessory"
+- FORMALITY: use "athletic" for sportswear and activewear even when it could pass as casual
+  (performance fabric, mesh panels, sports branding are the tell).
+- SEASONS: base it on fabric weight and coverage, not colour. Leave [] rather than guessing.
+- TAGS: describe style and use ("gym", "layering", "monsoon-friendly"), not facts already
+  captured in the fields above (do not tag the colour or the category).${
+    withBoxes ? `\n- BBOX: ${BOX_INSTRUCTION}` : ""
+  }`;
 }
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -164,6 +201,30 @@ function imageParts(imagePaths: string[]): Part[] {
 export interface ExtractionInput {
   imagePaths: string[]; // absolute paths
   dominant: DominantColor[];
+  /**
+   * What the model is looking at. "product-shot" = the clean regenerated images,
+   * which read far better than a crumpled flat-lay on a bedsheet; garment boxes
+   * are then meaningless and are not requested (the pipeline takes them from
+   * `extractBoundingBox` on the originals). Defaults to "photo".
+   */
+  sourceKind?: "photo" | "product-shot";
+}
+
+/** How to describe the input images to the model. */
+function describeInput(kind: "photo" | "product-shot", count: number, paths?: string[]): string {
+  const sides =
+    count > 1
+      ? "the first is the FRONT, the second is the BACK"
+      : "it shows the FRONT only; there is no back image";
+  if (paths) {
+    const list = paths.map((p) => `- ${p}`).join("\n");
+    return kind === "product-shot"
+      ? `Read these clean catalog product shots of ONE item (${sides}):\n${list}`
+      : `Read these photo file(s) of ONE item (${sides}). They are casual flat-lay photos — ignore the surface, surroundings and lighting:\n${list}`;
+  }
+  return kind === "product-shot"
+    ? `The attached images are clean catalog product shots of ONE item, regenerated from the original photos (${sides}). Judge the garment from these.`
+    : `The attached photos show ONE item (${sides}). They are casual flat-lay photos — ignore the surface, surroundings and lighting.`;
 }
 
 export async function extractItemMetadata(input: ExtractionInput): Promise<AiInference> {
@@ -171,14 +232,17 @@ export async function extractItemMetadata(input: ExtractionInput): Promise<AiInf
   let resultText: string;
   let usedModel: string;
 
+  const kind = input.sourceKind ?? "photo";
+  const withBoxes = kind === "photo";
+
   if (engine === "gemini") {
-    const ref =
-      input.imagePaths.length > 1
-        ? "The attached photos show the SAME item: the first is the FRONT, the second is the BACK."
-        : "The attached photo shows the FRONT of the item. There is no back photo.";
+    const imageRef = describeInput(kind, input.imagePaths.length);
     const result = await generateContent({
       models: geminiModels(),
-      parts: [{ text: buildPrompt(ref, input.dominant) }, ...imageParts(input.imagePaths)],
+      parts: [
+        { text: buildPrompt({ imageRef, dominant: input.dominant, withBoxes }) },
+        ...imageParts(input.imagePaths),
+      ],
       responseMimeType: "application/json",
       temperature: 0.1,
       maxOutputTokens: 2048,
@@ -187,11 +251,9 @@ export async function extractItemMetadata(input: ExtractionInput): Promise<AiInf
     usedModel = result.model;
   } else {
     const model = getSetting("ai.extractionModel") ?? undefined;
-    const ref = `Read these photo file(s) of the SAME item (front and back):\n${input.imagePaths
-      .map((p) => `- ${p}`)
-      .join("\n")}`;
+    const imageRef = describeInput(kind, input.imagePaths.length, input.imagePaths);
     resultText = await runAgentToResult({
-      prompt: buildPrompt(ref, input.dominant),
+      prompt: buildPrompt({ imageRef, dominant: input.dominant, withBoxes }),
       allowedTools: ["Read"],
       maxTurns: 8,
       model,

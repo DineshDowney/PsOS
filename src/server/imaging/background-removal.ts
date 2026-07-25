@@ -14,13 +14,16 @@ import { MODEL_SIZE, maskToAlphaPng, toModelTensor } from "./birefnet-tensor";
  * 2026-07-15). A child process turns that worst case into "cutout
  * unavailable, keep the crop".
  *
- *   1. BiRefNet (preferred): used when models/birefnet.onnx exists. The model
- *      file is downloaded BY THE USER in a browser (no tooling-originated
- *      external HTTP from this machine — endpoint-security constraint). The
- *      parent does all image work (birefnet-tensor.ts); the worker
- *      (scripts/birefnet-worker.mjs) only sees raw float tensors.
- *   2. imgly (fallback): scripts/bg-worker.mjs, weights bundled in
- *      node_modules.
+ *   1. imgly (default): scripts/bg-worker.mjs, weights bundled in node_modules.
+ *   2. BiRefNet (opt-in via PSOS_BG_ENGINE=birefnet): needs models/birefnet.onnx,
+ *      downloaded BY THE USER in a browser (no tooling-originated external HTTP
+ *      from this machine — endpoint-security constraint). The parent does all
+ *      image work (birefnet-tensor.ts); the worker (scripts/birefnet-worker.mjs)
+ *      only sees raw float tensors. Kept for reference, not a live direction.
+ *
+ * Since 2026-07-25 this whole module is only the THIRD rung of the cutout ladder
+ * (see cutout-ladder.ts) — generated shots are keyed deterministically instead,
+ * and segmentation is the fallback that rarely fires.
  *
  * Quality note (2026-07-15): segmentation output is only good on PRE-CROPPED
  * garment images. Callers must pass the bbox crop, not the full-frame photo.
@@ -105,10 +108,12 @@ export async function removeBackground(
 ): Promise<BackgroundRemovalResult | null> {
   if (process.env.PSOS_DISABLE_BG_REMOVAL === "1") return null;
 
+  // imgly by default. BiRefNet was dropped as a direction (2026-07-25 — the plan
+  // is AI regeneration, not better segmentation) and its worker crashes on the
+  // VM, which silently cost every new upload its cutout while it was still the
+  // preferred engine. Now strictly opt-in: PSOS_BG_ENGINE=birefnet.
   const engine =
-    process.env.PSOS_BG_ENGINE === "imgly" ? "imgly"
-    : birefnetAvailable() ? "birefnet"
-    : "imgly";
+    process.env.PSOS_BG_ENGINE === "birefnet" && birefnetAvailable() ? "birefnet" : "imgly";
 
   try {
     if (engine === "birefnet") return await removeViaBirefnet(input);

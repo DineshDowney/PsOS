@@ -10,21 +10,25 @@ import { useToast } from "@/components/providers";
 
 const STAGE_LABELS: Record<ImportStage, string> = {
   save: "Save photos",
-  background_removal: "Remove background",
-  thumbnail: "Thumbnail",
+  garment_box: "Locate garment",
+  image_generation: "Studio shot",
+  background_removal: "Cut out",
   colors: "Color analysis",
   ai_metadata: "AI metadata",
+  thumbnail: "Thumbnail",
 };
 
 function StageRow({ job }: { job: ImportJob }) {
   return (
     <div className="flex flex-wrap gap-x-5 gap-y-1 text-[10px] uppercase tracking-[0.08em]">
       {(Object.keys(STAGE_LABELS) as ImportStage[]).map((stage) => {
-        const info = job.stages[stage];
+        // Jobs created before a stage existed have no entry for it.
+        const info = job.stages[stage] ?? { status: "pending" as const };
         const color =
           info.status === "done" ? "text-ok"
           : info.status === "failed" ? "text-danger"
           : info.status === "running" ? "text-accent animate-pulse"
+          : info.status === "skipped" ? "text-faint line-through"
           : "text-faint";
         return (
           <span key={stage} className={color} title={info.error}>

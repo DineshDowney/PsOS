@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { and, eq, inArray, lt } from "drizzle-orm";
-import { getDb, schema } from "@/server/db/client";
+import { getDb, schema, dataDir } from "@/server/db/client";
 import { newId, nowIso } from "@/server/lib/ids";
 import { parseJson, toJson } from "@/server/lib/json";
 import { badRequest, notFound } from "@/server/lib/errors";
@@ -13,30 +13,47 @@ import { normalizeUpload, makeThumbnail, cropToBox } from "@/server/imaging/thum
 import { dominantColors, type DominantColor } from "@/server/imaging/dominant-colors";
 import { removeBackground } from "@/server/imaging/background-removal";
 import { cutoutQa } from "@/server/imaging/cutout-qa";
+import { cutoutFromGenerated, type Cutout } from "@/server/imaging/cutout-ladder";
 import { dhash } from "@/server/imaging/phash";
-import { extractItemMetadata } from "@/server/ai/extraction";
+import { extractItemMetadata, extractBoundingBox } from "@/server/ai/extraction";
+import { generateProductShot } from "@/server/ai/image-generation";
+import { hasVertexKey } from "@/server/ai/vertex-client";
 import type { BBox, ImageRole, ImportJob, ImportStage, StageInfo } from "@/shared/types";
 
 /**
  * Import pipeline: front(+back) photo → draft item ready for review.
  *
- * Stages: save → background_removal → thumbnail → colors → ai_metadata.
+ * Stages, in order:
+ *   save            originals + a provisional tile so the grid isn't empty
+ *   garment_box     locate the garment in each photo, write the tight crops
+ *   image_generation redraw each side as a clean studio product shot (Gemini)
+ *   background_removal transparent cutouts (ladder in cutout-ladder.ts)
+ *   colors          dominant colours, read off the CUTOUT so they're garment-only
+ *   ai_metadata     fields + tags, read off the STUDIO SHOTS when available
+ *   thumbnail       final catalog tile from the best image we ended up with
+ *
+ * The order is load-bearing and not the obvious one: colours and metadata come
+ * last because they are much better when read from a clean, isolated garment
+ * than from a crumpled flat-lay on a bedsheet.
+ *
  * Progress is persisted per stage in import_jobs, so the UI can poll and a
  * killed dev server leaves an inspectable (retryable) record, not a mystery.
  *
  * Failure policy: only the `save` stage is fatal. Everything downstream
- * degrades gracefully — a failed cutout keeps originals, failed AI leaves a
- * blank form — and the failure reason is stored, never swallowed.
+ * degrades gracefully — every later stage falls back to the best artifact its
+ * predecessors managed to produce — and the reason is stored, never swallowed.
  */
 
 type Stages = Record<ImportStage, StageInfo>;
 
 const initialStages = (): Stages => ({
   save: { status: "pending" },
+  garment_box: { status: "pending" },
+  image_generation: { status: "pending" },
   background_removal: { status: "pending" },
-  thumbnail: { status: "pending" },
   colors: { status: "pending" },
   ai_metadata: { status: "pending" },
+  thumbnail: { status: "pending" },
 });
 
 function updateJob(
@@ -247,155 +264,338 @@ export function recoverOrphanedJobs(): number {
   return orphans.length;
 }
 
-async function runPipeline(jobId: string, itemId: string, input: StartImportInput): Promise<void> {
-  const stages = initialStages();
-  const mark = (stage: ImportStage, info: StageInfo) => {
-    stages[stage] = info;
-    updateJob(jobId, { stages });
-  };
-  const fail = (stage: ImportStage, err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    mark(stage, { status: "failed", error: msg });
-    console.error(`[psos] import stage ${stage} failed:`, msg);
-  };
+// ---------------------------------------------------------------------------
+// Stages
+//
+// One context object carries everything the stages read and write, so the ORDER
+// of the calls in runPipeline() is the only sequencing logic there is. Each stage
+// owns one artifact, reports its own status, and swallows its own errors — only
+// `save` is fatal.
 
-  const dir = itemImageDir(itemId);
+interface Ctx {
+  itemId: string;
+  dir: string;
+  front: Buffer;
+  back: Buffer | null;
+  frontPath: string;
+  backPath: string | null;
+  boxFront: BBox | null;
+  boxBack: BBox | null;
+  cropFront: Buffer | null;
+  cropBack: Buffer | null;
+  genFront: Buffer | null;
+  genBack: Buffer | null;
+  genFrontPath: string | null;
+  genBackPath: string | null;
+  cutoutFront: Cutout | null;
+  dominant: DominantColor[];
+}
 
-  // 1. save originals (fatal on failure)
-  mark("save", { status: "running" });
-  let frontPath: string;
-  let backPath: string | null = null;
-  let frontBuf: Buffer;
-  let backBuf: Buffer | null = null;
+interface Report {
+  mark: (stage: ImportStage, info: StageInfo) => void;
+  fail: (stage: ImportStage, err: unknown) => void;
+}
+
+/**
+ * The cleanest front image available, best first. Everything downstream
+ * (colours, thumbnail) reads through this, so "best" is defined once.
+ */
+function bestFront(ctx: Ctx): { buffer: Buffer; alpha: boolean } {
+  if (ctx.cutoutFront) return { buffer: ctx.cutoutFront.png, alpha: true };
+  if (ctx.genFront) return { buffer: ctx.genFront, alpha: false };
+  if (ctx.cropFront) return { buffer: ctx.cropFront, alpha: false };
+  return { buffer: ctx.front, alpha: false };
+}
+
+/**
+ * Save the originals and put a provisional tile on the grid immediately. The
+ * only fatal stage: without the originals there is nothing to work from.
+ */
+async function stageSave(
+  ctx: Ctx,
+  input: StartImportInput,
+  report: Report,
+): Promise<boolean> {
+  report.mark("save", { status: "running" });
   try {
     const front = await normalizeUpload(input.front);
-    frontBuf = front.buffer;
-    frontPath = path.join(dir, "front.jpg");
-    await saveBuffer(frontPath, front.buffer);
-    addImageRow(itemId, "front", frontPath, front.buffer, front.width, front.height, await dhash(front.buffer));
+    ctx.front = front.buffer;
+    ctx.frontPath = path.join(ctx.dir, "front.jpg");
+    await saveBuffer(ctx.frontPath, front.buffer);
+    addImageRow(
+      ctx.itemId,
+      "front",
+      ctx.frontPath,
+      front.buffer,
+      front.width,
+      front.height,
+      await dhash(front.buffer),
+    );
 
     if (input.back && input.back.length > 0) {
       const back = await normalizeUpload(input.back);
-      backBuf = back.buffer;
-      backPath = path.join(dir, "back.jpg");
-      await saveBuffer(backPath, back.buffer);
-      addImageRow(itemId, "back", backPath, back.buffer, back.width, back.height);
+      ctx.back = back.buffer;
+      ctx.backPath = path.join(ctx.dir, "back.jpg");
+      await saveBuffer(ctx.backPath, back.buffer);
+      addImageRow(ctx.itemId, "back", ctx.backPath, back.buffer, back.width, back.height);
     }
-    mark("save", { status: "done" });
+
+    // Provisional full-frame tile so the grid shows something while the rest
+    // runs; the thumbnail stage replaces these bytes at the end.
+    const thumb = await makeThumbnail(front.buffer);
+    const thumbPath = path.join(ctx.dir, "thumbnail.jpg");
+    await saveBuffer(thumbPath, thumb.buffer);
+    addImageRow(ctx.itemId, "thumbnail", thumbPath, thumb.buffer, thumb.width, thumb.height);
+
+    report.mark("save", { status: "done" });
+    return true;
   } catch (err) {
-    fail("save", err);
+    report.fail("save", err);
+    return false;
+  }
+}
+
+/** Locate the garment in each original and write the tight crops. */
+async function stageGarmentBox(ctx: Ctx, report: Report): Promise<void> {
+  report.mark("garment_box", { status: "running" });
+  try {
+    ctx.boxFront = await extractBoundingBox(ctx.frontPath);
+    if (ctx.backPath) ctx.boxBack = await extractBoundingBox(ctx.backPath);
+
+    if (ctx.boxFront) {
+      ctx.cropFront = await cropToBox(ctx.front, ctx.boxFront);
+      if (ctx.cropFront) {
+        const p = path.join(ctx.dir, "front_cropped.jpg");
+        await saveBuffer(p, ctx.cropFront);
+        addImageRow(ctx.itemId, "front_cropped", p, ctx.cropFront);
+      }
+    }
+    if (ctx.back && ctx.boxBack) {
+      ctx.cropBack = await cropToBox(ctx.back, ctx.boxBack);
+      if (ctx.cropBack) {
+        const p = path.join(ctx.dir, "back_cropped.jpg");
+        await saveBuffer(p, ctx.cropBack);
+        addImageRow(ctx.itemId, "back_cropped", p, ctx.cropBack);
+      }
+    }
+
+    report.mark(
+      "garment_box",
+      ctx.cropFront
+        ? { status: "done" }
+        : { status: "failed", error: "Could not locate the garment — later stages use the full photo" },
+    );
+  } catch (err) {
+    report.fail("garment_box", err);
+  }
+}
+
+/**
+ * Redraw each side as a clean studio product shot. This is what makes the
+ * catalog look like a catalog: the source photos are crumpled flat-lays on a
+ * bedsheet, which no amount of segmentation can rescue.
+ */
+async function stageImageGeneration(ctx: Ctx, report: Report): Promise<void> {
+  if (!hasVertexKey()) {
+    report.mark("image_generation", {
+      status: "skipped",
+      error: "Gemini is not configured here — falling back to segmenting the crop",
+    });
+    return;
+  }
+  report.mark("image_generation", { status: "running" });
+  try {
+    for (const side of ["front", "back"] as const) {
+      const source = side === "front" ? (ctx.cropFront ?? ctx.front) : (ctx.cropBack ?? ctx.back);
+      if (!source) continue;
+
+      const shot = await generateProductShot(source, "image/jpeg");
+      if (!shot) continue;
+
+      // Archive the raw generation for provenance; never served.
+      await saveBuffer(
+        path.join(dataDir, "generated", ctx.itemId, `${side}-${sha256Of(shot.png).slice(0, 8)}.png`),
+        shot.png,
+      );
+      const p = path.join(ctx.dir, `generated_${side}.png`);
+      await saveBuffer(p, shot.png);
+      addImageRow(ctx.itemId, `generated_${side}`, p, shot.png);
+
+      if (side === "front") {
+        ctx.genFront = shot.png;
+        ctx.genFrontPath = p;
+      } else {
+        ctx.genBack = shot.png;
+        ctx.genBackPath = p;
+      }
+    }
+
+    report.mark(
+      "image_generation",
+      ctx.genFront
+        ? { status: "done" }
+        : { status: "failed", error: "No studio shot produced — kept the cropped photo" },
+    );
+  } catch (err) {
+    report.fail("image_generation", err);
+  }
+}
+
+/**
+ * Transparent cutouts. From the studio shot via the shared ladder when we have
+ * one; otherwise segment the crop, which is the old (worse) path.
+ */
+async function stageBackgroundRemoval(ctx: Ctx, report: Report): Promise<void> {
+  report.mark("background_removal", { status: "running" });
+  try {
+    let note: string | null = null;
+
+    for (const side of ["front", "back"] as const) {
+      const generated = side === "front" ? ctx.genFront : ctx.genBack;
+      let cutout: Cutout | null = null;
+
+      if (generated) {
+        cutout = await cutoutFromGenerated(generated);
+      } else {
+        const crop = side === "front" ? ctx.cropFront : ctx.cropBack;
+        const seg = crop ? await removeBackground(crop) : null;
+        if (seg) {
+          const qa = await cutoutQa(seg.png);
+          if (qa.ok) cutout = { png: seg.png, how: "segmentation", clean: true };
+          else if (side === "front") note = `Cutout rejected by quality check (${qa.reason})`;
+        }
+      }
+      if (!cutout) continue;
+
+      const p = path.join(ctx.dir, `transparent_${side}.png`);
+      await saveBuffer(p, cutout.png);
+      addImageRow(ctx.itemId, `transparent_${side}`, p, cutout.png);
+      if (side === "front") {
+        ctx.cutoutFront = cutout;
+        if (!cutout.clean) note = cutout.how;
+      }
+    }
+
+    report.mark(
+      "background_removal",
+      ctx.cutoutFront
+        ? { status: "done", ...(note ? { error: note } : {}) }
+        : {
+            status: "failed",
+            error: note ?? "No transparent cutout — the tile keeps the best opaque image",
+          },
+    );
+  } catch (err) {
+    report.fail("background_removal", err);
+  }
+}
+
+/** Deterministic colour cross-check, read off the garment only. */
+async function stageColors(ctx: Ctx, report: Report): Promise<void> {
+  report.mark("colors", { status: "running" });
+  try {
+    // Runs AFTER the cutout on purpose: dominantColors ignores transparent
+    // pixels, so a cutout reports garment colours. Reading the raw photo (as
+    // this used to) reported half bedsheet, and those colours feed the AI prompt.
+    ctx.dominant = await dominantColors(bestFront(ctx).buffer);
+    report.mark("colors", { status: "done" });
+  } catch (err) {
+    report.fail("colors", err);
+  }
+}
+
+/**
+ * AI metadata, read off the studio shots when we have them — a clean, isolated
+ * garment yields better colour and pattern calls than a crumpled photo.
+ * Writes only AI-owned fields (provenance protects user edits).
+ */
+async function stageAiMetadata(ctx: Ctx, report: Report): Promise<void> {
+  report.mark("ai_metadata", { status: "running" });
+  try {
+    const generated = [ctx.genFrontPath, ctx.genBackPath].filter((p): p is string => p !== null);
+    const useGenerated = generated.length > 0;
+    const inference = await extractItemMetadata({
+      imagePaths: useGenerated
+        ? generated
+        : [ctx.frontPath, ...(ctx.backPath ? [ctx.backPath] : [])],
+      dominant: ctx.dominant,
+      sourceKind: useGenerated ? "product-shot" : "photo",
+    });
+
+    // ai_raw stores the whole inference, and the product-shot prompt does not
+    // ask for boxes — so fold in the boxes we actually found, or backfills lose
+    // them and re-pay for another AI call.
+    applyInferenceToItem(ctx.itemId, {
+      ...inference,
+      bbox: inference.bbox ?? ctx.boxFront,
+      bboxBack: inference.bboxBack ?? ctx.boxBack,
+    });
+    report.mark("ai_metadata", { status: "done" });
+  } catch (err) {
+    report.fail("ai_metadata", err);
+  }
+}
+
+/** Final catalog tile from the best image we ended up with. */
+async function stageThumbnail(ctx: Ctx, report: Report): Promise<void> {
+  report.mark("thumbnail", { status: "running" });
+  try {
+    const { buffer, alpha } = bestFront(ctx);
+    const thumb = await makeThumbnail(buffer, { alpha });
+    const p = path.join(ctx.dir, alpha ? "thumbnail.png" : "thumbnail.jpg");
+    await saveBuffer(p, thumb.buffer);
+    updateThumbnailRow(ctx.itemId, p, thumb.buffer, thumb.width, thumb.height);
+    report.mark("thumbnail", { status: "done" });
+  } catch (err) {
+    report.fail("thumbnail", err);
+  }
+}
+
+async function runPipeline(jobId: string, itemId: string, input: StartImportInput): Promise<void> {
+  const stages = initialStages();
+  const report: Report = {
+    mark: (stage, info) => {
+      stages[stage] = info;
+      updateJob(jobId, { stages });
+    },
+    fail: (stage, err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      stages[stage] = { status: "failed", error: msg };
+      updateJob(jobId, { stages });
+      console.error(`[psos] import stage ${stage} failed:`, msg);
+    },
+  };
+
+  const ctx: Ctx = {
+    itemId,
+    dir: itemImageDir(itemId),
+    front: Buffer.alloc(0),
+    back: null,
+    frontPath: "",
+    backPath: null,
+    boxFront: null,
+    boxBack: null,
+    cropFront: null,
+    cropBack: null,
+    genFront: null,
+    genBack: null,
+    genFrontPath: null,
+    genBackPath: null,
+    cutoutFront: null,
+    dominant: [],
+  };
+
+  if (!(await stageSave(ctx, input, report))) {
     updateJob(jobId, { status: "failed", error: "Could not save the uploaded photos" });
     return;
   }
 
-  // 2. provisional full-frame thumbnail — replaced by the garment crop/cutout
-  // after the AI locates the garment. The grid shows something meanwhile.
-  mark("thumbnail", { status: "running" });
-  try {
-    const thumb = await makeThumbnail(frontBuf);
-    const thumbPath = path.join(dir, "thumbnail.jpg");
-    await saveBuffer(thumbPath, thumb.buffer);
-    addImageRow(itemId, "thumbnail", thumbPath, thumb.buffer, thumb.width, thumb.height);
-    mark("thumbnail", { status: "done" });
-  } catch (err) {
-    fail("thumbnail", err);
-  }
-
-  // 3. deterministic color extraction
-  mark("colors", { status: "running" });
-  let dominant: DominantColor[] = [];
-  try {
-    dominant = await dominantColors(frontBuf);
-    mark("colors", { status: "done" });
-  } catch (err) {
-    fail("colors", err);
-  }
-
-  // 4. AI metadata + garment boxes (writes only AI-owned fields via provenance)
-  mark("ai_metadata", { status: "running" });
-  let boxFront: BBox | null = null;
-  let boxBack: BBox | null = null;
-  try {
-    const inference = await extractItemMetadata({
-      imagePaths: [frontPath, ...(backPath ? [backPath] : [])],
-      dominant,
-    });
-    applyInferenceToItem(itemId, inference);
-    boxFront = inference.bbox ?? null;
-    boxBack = inference.bboxBack ?? null;
-    mark("ai_metadata", { status: "done" });
-  } catch (err) {
-    fail("ai_metadata", err);
-  }
-
-  // 5. tight garment crops for the item page (raw photos stay on disk only)
-  let cropFront: Buffer | null = null;
-  try {
-    if (boxFront) cropFront = await cropToBox(frontBuf, boxFront);
-    if (cropFront) {
-      const p = path.join(dir, "front_cropped.jpg");
-      await saveBuffer(p, cropFront);
-      addImageRow(itemId, "front_cropped", p, cropFront);
-    }
-    if (backBuf && boxBack) {
-      const cropBack = await cropToBox(backBuf, boxBack);
-      if (cropBack) {
-        const p = path.join(dir, "back_cropped.jpg");
-        await saveBuffer(p, cropBack);
-        addImageRow(itemId, "back_cropped", p, cropBack);
-      }
-    }
-  } catch (err) {
-    console.error("[psos] garment crop failed (item page falls back to originals):", err);
-  }
-
-  // 6. background removal on the CROP (imgly output is only good pre-cropped),
-  // gated by cutoutQa — a smeared matte keeps the crop instead. The catalog
-  // thumbnail becomes cutout > crop > full frame, best available.
-  mark("background_removal", { status: "running" });
-  let bestThumbSource: Buffer | null = cropFront;
-  let thumbHasAlpha = false;
-  try {
-    const result = cropFront ? await removeBackground(cropFront) : null;
-    if (result) {
-      const qa = await cutoutQa(result.png);
-      if (qa.ok) {
-        const cutoutPath = path.join(dir, "transparent_front.png");
-        await saveBuffer(cutoutPath, result.png);
-        addImageRow(itemId, "transparent_front", cutoutPath, result.png);
-        bestThumbSource = result.png;
-        thumbHasAlpha = true;
-        mark("background_removal", { status: "done" });
-      } else {
-        mark("background_removal", {
-          status: "failed",
-          error: `Cutout rejected by quality check (${qa.reason}) — kept the crop`,
-        });
-      }
-    } else {
-      mark("background_removal", {
-        status: "failed",
-        error: cropFront
-          ? "Background removal unavailable — kept the cropped photo"
-          : "No garment crop available — kept the original photo",
-      });
-    }
-  } catch (err) {
-    fail("background_removal", err);
-  }
-
-  // 7. final thumbnail from the best source available (alpha PNG for cutouts,
-  // so the grid tile has no baked background)
-  if (bestThumbSource) {
-    try {
-      const thumb = await makeThumbnail(bestThumbSource, { alpha: thumbHasAlpha });
-      const thumbPath = path.join(dir, thumbHasAlpha ? "thumbnail.png" : "thumbnail.jpg");
-      await saveBuffer(thumbPath, thumb.buffer);
-      updateThumbnailRow(itemId, thumbPath, thumb.buffer, thumb.width, thumb.height);
-    } catch (err) {
-      console.error("[psos] final thumbnail failed (kept provisional):", err);
-    }
-  }
+  await stageGarmentBox(ctx, report);
+  await stageImageGeneration(ctx, report);
+  await stageBackgroundRemoval(ctx, report);
+  await stageColors(ctx, report);
+  await stageAiMetadata(ctx, report);
+  await stageThumbnail(ctx, report);
 
   updateJob(jobId, { status: "ready_for_review", error: null });
   logActivity("system", "import.ready_for_review", { type: "import_job", id: jobId });
@@ -408,7 +608,9 @@ function mapJob(row: typeof schema.importJobs.$inferSelect, withItem = true): Im
     id: row.id,
     itemId: row.itemId,
     status: row.status,
-    stages: parseJson<Stages>(row.stages, initialStages()),
+    // Merged with the defaults: jobs created before a stage existed have no
+    // entry for it, and the UI would read undefined.
+    stages: { ...initialStages(), ...parseJson<Stages>(row.stages, initialStages()) },
     error: row.error,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

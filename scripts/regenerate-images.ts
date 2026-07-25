@@ -29,10 +29,6 @@ import { loadEnvFile } from "../src/server/lib/env-file";
 
 loadEnvFile(); // must precede anything that reads Vertex config
 
-// BiRefNet is a dead end here (dropped 2026-07-25) and its worker crashes on the
-// VM; the ML rung is only a fallback, so use the bundled imgly weights.
-process.env.PSOS_BG_ENGINE ??= "imgly";
-
 import { getDb, schema, dataDir } from "../src/server/db/client";
 import { newId, nowIso } from "../src/server/lib/ids";
 import {
@@ -43,9 +39,7 @@ import {
   itemImageDir,
 } from "../src/server/imaging/storage";
 import { makeThumbnail } from "../src/server/imaging/thumbnails";
-import { keyFlatBackground } from "../src/server/imaging/flat-key";
-import { removeBackground } from "../src/server/imaging/background-removal";
-import { cutoutQa } from "../src/server/imaging/cutout-qa";
+import { cutoutFromGenerated, type Cutout } from "../src/server/imaging/cutout-ladder";
 import { generateProductShot } from "../src/server/ai/image-generation";
 import { hasVertexKey } from "../src/server/ai/vertex-client";
 
@@ -118,46 +112,6 @@ function sourcePhoto(itemId: string, side: Side): { buffer: Buffer; mime: string
       buffer: fs.readFileSync(abs),
       mime: abs.endsWith(".png") ? "image/png" : "image/jpeg",
     };
-  }
-  return null;
-}
-
-interface Cutout {
-  png: Buffer;
-  how: string;
-  /** false = background removed but QA found an artifact; still better than a grey square. */
-  clean: boolean;
-}
-
-/**
- * Turn a generated shot into a transparent cutout, best rung first:
- *   1. the model emitted usable alpha — nothing to do (the prompt asks for it);
- *   2. flat-key the uniform backdrop we requested as its fallback;
- *   3. ML segmentation;
- *   4. flat-key output that removed the backdrop but failed QA — accepted with a
- *      warning, because a garment with a small artifact beats no replacement.
- * `cutoutQa` is the judge, so "did the model give us real transparency?" needs no
- * separate detector: an opaque image fails its corner checks by definition.
- */
-async function cutoutFromGenerated(png: Buffer): Promise<Cutout | null> {
-  const native = await cutoutQa(png);
-  if (native.ok) return { png, how: "native transparency", clean: true };
-
-  const flat = await keyFlatBackground(png);
-  if (flat) {
-    const qa = await cutoutQa(flat.png);
-    if (qa.ok) {
-      return { png: flat.png, how: `flat-key (kept ${(flat.keptFraction * 100).toFixed(0)}%)`, clean: true };
-    }
-  }
-  const seg = await removeBackground(png);
-  if (seg) {
-    const qa = await cutoutQa(seg.png);
-    if (qa.ok) return { png: seg.png, how: "segmentation", clean: true };
-  }
-  if (flat) {
-    const qa = await cutoutQa(flat.png);
-    return { png: flat.png, how: `flat-key, QA warning: ${qa.reason}`, clean: false };
   }
   return null;
 }

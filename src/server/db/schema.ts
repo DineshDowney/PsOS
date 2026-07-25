@@ -261,7 +261,8 @@ export const importJobs = sqliteTable("import_jobs", {
     .references(() => items.id, { onDelete: "cascade" }),
   /**
    * JSON Record<stage, {status: "pending"|"running"|"done"|"failed", error?: string}>
-   * stages: save, background_removal, thumbnail, colors, ai_metadata
+   * stages: save, garment_box, image_generation, background_removal, colors,
+   * ai_metadata, thumbnail (see imports/pipeline.ts for why that order)
    */
   stages: text("stages").notNull(),
   /** queued = waiting for a worker slot; enum is TS-level only (no DB CHECK) */

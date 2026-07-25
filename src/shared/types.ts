@@ -118,15 +118,19 @@ export interface AiInference {
   extractedAt: string;
 }
 
+/** In execution order — the import screen renders them in this sequence. */
 export type ImportStage =
   | "save"
+  | "garment_box"
+  | "image_generation"
   | "background_removal"
-  | "thumbnail"
   | "colors"
-  | "ai_metadata";
+  | "ai_metadata"
+  | "thumbnail";
 
 export interface StageInfo {
-  status: "pending" | "running" | "done" | "failed";
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  /** Why it failed, or why it was skipped. Surfaced as a tooltip. */
   error?: string;
 }
 
