@@ -5,27 +5,31 @@ Last updated: 2026-07-25.
 
 ## Current objective
 
-Regenerate every wardrobe image with **Gemini** as a clean studio product shot, front and
-back, and have the catalog show the new images. All Gemini calls run **on the VM** — never
-from the laptop.
+**Phase closed 2026-07-25.** The wardrobe is regenerated as clean studio product shots, and
+*new uploads get the same treatment automatically* — Gemini for both metadata and imagery,
+running on the VM, reachable from any device behind a password.
+
+Next phase starts from the backlog at the bottom.
 
 ## Where we are
 
 | Thing | State |
 |---|---|
-| Billing account `01BB42-93FE43-97EFA2` | **Reopened** by Dinesh — `open: true`, project link `billingEnabled: true` |
-| Gemini image generation | **Working** and faithful |
-| Cutout from generated shot | **Fixed** — was a sharp bug, see finding 8 |
-| **Wardrobe regenerated** | **Done 2026-07-25: 24/24 images (16 fronts + 8 backs), 24 clean cutouts, 0 failures, ~$0.96.** Every item's catalog tile is now a generated transparent cutout |
-| Front + back regeneration | Built (`--side` to restrict; both by default) |
-| Catalog tile follows the new generation | Built — the tile is always repointed at the fresh image |
-| App on VM | Running (`systemctl is-active psos` → active) at `http://34.100.219.116:3000` |
-| Password gate | **ACTIVE on the VM.** `EnvironmentFile=-/etc/psos.env` + restart is enough — verified no rebuild needed. Currently holds a throwaway random value; Dinesh sets his own with `psos-set-password` on the VM |
-| Login brute-force cost | Progressive delay on `/api/auth/login` (`login-throttle.ts`), deliberately **not** a lockout so nobody can lock Dinesh out of his own wardrobe |
-| Static IP `34.100.219.116` | Reserved + attached to `psos-1`. Costs ~$7/mo now that billing is live — keep or release? |
-| Firewall `psos-app` | **tcp:3000 from `0.0.0.0/0`** — opened 2026-07-25 on Dinesh's call, password-first, so the app works from any device including his phone. No more IP-allowlist churn |
+| **Upload → catalog, end to end** | **Proven live 2026-07-25** on the VM over HTTP through the password gate: all 7 stages green in ~40 s, all 9 image roles written, Gemini metadata correct |
+| **Wardrobe regenerated** | Every item, front and back, as a generated transparent cutout. First pass 24/24; re-run after the prompt + halo fixes |
+| Import pipeline | 7 single-purpose stages over one context object (`imports/pipeline.ts`); colours + metadata read the CLEAN generated image, not the raw photo |
+| Prompts | Rewritten. Image = PRESENTATION (one pose/light/framing for every garment) vs IDENTITY (untouchable). Metadata = naming convention + category disambiguation + specific colour names |
+| Cutout quality | Sheared-mask bug fixed (finding 8); bright halo on the dark grid fixed (finding 10) |
+| Gemini rate limits | Same-model backoff 20/45/90s honouring `Retry-After`, plus 5s batch pacing and `--missing` to retry a partial run |
+| App on VM | Running at **`http://34.100.219.116:3000`**, commit `4e43ddc` |
+| Password gate | **ACTIVE.** Root-owned `/etc/psos.env` via `EnvironmentFile`; no rebuild needed (verified). Rotate with `psos-set-password` on the VM |
+| Login brute-force cost | Progressive delay on `/api/auth/login`, deliberately **not** a lockout |
+| Firewall `psos-app` | **tcp:3000 from `0.0.0.0/0`** — opened password-first, so the app works from any device including his phone |
+| Billing account `01BB42-93FE43-97EFA2` | Open; trial-upgrade credit valid to 2026-10-14 |
+| Static IP `34.100.219.116` | Attached to `psos-1`. ~$7/mo — **open question: keep or release?** |
+| VM shutdown | Hard 60-min autostop at boot (`psos-autostop.service`). Idle-based shutdown was considered and **rejected** by Dinesh |
+| BiRefNet segmentation | **Dropped** as a direction; opt-in via `PSOS_BG_ENGINE=birefnet`, imgly is the default |
 | Editorial UI (wardrobe/item/import) | Shipped `5babeec` |
-| BiRefNet segmentation engine | **Dropped** (Dinesh, 2026-07-25). `PSOS_BG_ENGINE=imgly` is forced in the regen script; its worker crashes on the VM |
 | App icon | Done (`src/app/icon.svg`) |
 
 ## Live findings (2026-07-25 session)
@@ -70,22 +74,49 @@ Verified against the real API / real images, in order:
    The retry run then completed 10/10. Two 429s still occurred mid-run and were simply
    waited out.
 
-## Image pipeline as built
+10. **Every cutout wore a bright halo on the dark grid, and it was structural.** Measured on a
+    real tile: semi-transparent edge pixels at luminance **158** against a garment at **30**.
+    The boundary ring the flood fill keeps is not garment — each pixel is a camera/codec blend
+    of garment and light backdrop — and feathering makes it translucent without fixing its
+    COLOUR. `keyFlatBackground` now erodes the kept region 2px before feathering, so the soft
+    edge is built from real garment pixels: same tile after, **30.9** against 29.8. The
+    plausibility check had to move BEFORE erosion, since erosion always trims the ring and was
+    starting to make a total keying failure look like a 3% success.
 
-`front_cropped` / `back_cropped` → Gemini product shot → cutout ladder:
+11. **A new upload was getting good metadata and a bad picture.** The pipeline never called
+    Gemini for imagery — `generateProductShot` lived only in the batch script — so uploads
+    still segmented the crumpled photo. Worse, segmentation preferred BiRefNet, whose worker
+    crashes on the VM, so a fresh upload there was *guaranteed* no cutout. Now wired as a
+    first-class stage, and proven live end to end.
+
+## Import pipeline as built
+
+Seven single-purpose stages over one context object (`imports/pipeline.ts`):
+
+`save → garment_box → image_generation → background_removal → colors → ai_metadata → thumbnail`
+
+The order is load-bearing and not the obvious one: **colours and metadata come last**, read off
+the cutout and the generated shot, because `dominantColors` ignores transparent pixels (so a
+cutout reports garment colours instead of half bedsheet) and a clean isolated garment yields
+better colour/pattern calls than a crumpled flat-lay. Garment boxes come from
+`extractBoundingBox` on the ORIGINALS so each AI call has one job — and the found boxes are
+folded back into `ai_raw`, which stores the whole inference.
+
+Cutout ladder (`imaging/cutout-ladder.ts`, shared by the pipeline and the batch script):
 
 1. `cutoutQa` on the raw generation — if the model emitted real alpha, use it untouched;
 2. `keyFlatBackground` — deterministic flood fill of the flat backdrop we asked for;
-3. `removeBackground` (imgly) — ML fallback;
-4. flat-key output that removed the backdrop but failed QA — accepted with a logged warning;
+3. `removeBackground` (imgly) — ML fallback, in practice never reached;
+4. flat-key output that failed QA — accepted with a logged warning;
 5. no transparency at all → the tile shows the generation flattened.
 
-The prompt asks for a **real alpha channel first** and spells out the flat-grey fallback in
-detail (no shadow, seam, gradient, vignette or border), because a single stray line across
-the backdrop is enough to block a flood fill.
-
-Only a failed *generation* leaves an item untouched. Otherwise the catalog tile always ends
+In 24/24 real cases rung 2 won: Gemini does not emit alpha, but it does honour "one perfectly
+flat tone". Only a failed *generation* leaves an item untouched; otherwise the tile always ends
 up on the new image — `mapImage()` cache-busts with `?v=<sha256>`, so browsers pick it up.
+
+Failure policy: only `save` is fatal. Every later stage falls back to the best artifact its
+predecessors produced, and stages can report `skipped` (e.g. no Gemini configured on the
+laptop) rather than faking success.
 
 ## Runbook
 
@@ -112,17 +143,26 @@ npx tsx scripts/cutout-diag.ts <image>                  # why didn't this become
 - AI never overwrites user-edited *fields* (field-level provenance) — unchanged.
 - Never delete source photos; archive every generation.
 
-## Backlog (agreed, not started)
+## Backlog — next phase starts here
 
-- **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
-  `instances.start`, so hitting a URL from the phone boots the VM; open the app ~5 min later.
-- **HTTPS.** The app is now internet-facing on plain HTTP, so the password crosses the wire in
-  the clear and the session cookie is not `secure`. A Cloudflare Tunnel (already on this list)
-  fixes both; until then treat the password as low-value and don't reuse one.
-- Quality follow-ups from the first full regeneration: the cap's cutout has speckle artifacts
-  along the top edge, and the blue block-print kurta appears to exist as two duplicate items.
-- Retry for partially-failed import jobs (stage failed but job `ready_for_review`).
-- Category taxonomy pass (underwear → "accessory" vs "bottom" wobble).
-- Cloudflare Tunnel + domain (kills IP-allowlist churn, HTTPS, phone-anywhere).
-- Editorial treatment for the remaining 7 screens.
-- Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
+Highest value first:
+
+1. **HTTPS via Cloudflare Tunnel + a domain.** The app is internet-facing on plain HTTP, so
+   the password crosses the wire in the clear and the session cookie cannot be `secure`. Also
+   kills the fixed-IP dependency (see the static-IP question above) and makes phone access
+   work anywhere. Until it lands, treat the psos password as low-value and never reuse one.
+2. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
+   `instances.start`, so hitting a URL from the phone boots the VM; open the app ~5 min later.
+   Matters more now that the app is genuinely usable from a phone.
+3. **Catalog the rest of the wardrobe.** The pipeline is ready and one-shot per garment; this
+   is now photo-taking work, not engineering work.
+4. Quality follow-ups from the regeneration: the cap's cutout had speckle artifacts along the
+   top edge, and the blue block-print kurta looks like two duplicate items (archive one).
+   Re-check both after the prompt + halo re-run.
+5. Retry for partially-failed import jobs (a stage failed but the job reached
+   `ready_for_review` — currently only wholly-failed jobs can retry).
+6. Editorial treatment for the remaining 7 screens.
+7. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
+
+Considered and **rejected**: idle-based VM shutdown (Dinesh, 2026-07-25) — a forgotten open
+tab would keep the VM alive indefinitely, and the hard 60-minute autostop is good enough.

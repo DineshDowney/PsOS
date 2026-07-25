@@ -3,6 +3,70 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-25 — Wardrobe images are AI-REGENERATED, not segmented
+Segmentation was the wrong problem. Real photos (dark garment on a dark bedsheet, tripod and
+feet in frame) defeat any matte, and better models only made the failure prettier. Gemini now
+redraws each garment as a clean studio product shot and the cutout is taken from THAT — a
+synthetic flat backdrop is the easy case. BiRefNet is dropped as a direction (opt-in via
+`PSOS_BG_ENGINE=birefnet`; imgly is the default) and segmentation survives only as the third
+rung of `imaging/cutout-ladder.ts`, which in practice never fires: deterministic flood-fill
+keying won 24/24. Cost is ~$0.04/image, one-time per garment. The alternative considered and
+rejected was paying for OpenAI image editing; Vertex draws on existing GCP credits.
+
+## 2026-07-25 — Vertex AI authenticated by the VM's own service account, no API key anywhere
+An AI Studio key only works against `generativelanguage.googleapis.com`, whose free tier has
+zero image quota (429 `...FreeTier`), and the Vertex REST surface rejects keys outright (401,
+wants OAuth). So the VM uses ADC via the GCE metadata server (`VERTEX_USE_ADC=1`, instance
+scope `cloud-platform`, `roles/aiplatform.user`). Strictly better than a key: nothing to
+rotate or leak, and the laptop *physically cannot* spend money this way because the metadata
+server is only reachable from inside the VM. Two keys were exposed in a transcript earlier in
+the session and deleted; this design removes the class of mistake.
+
+## 2026-07-25 — Import pipeline reordered so AI reads the CLEAN image
+Stages are now `save → garment_box → image_generation → background_removal → colors →
+ai_metadata → thumbnail`, each a single-purpose function over one context object. The order is
+deliberate and not the obvious one: colours and metadata run LAST, off the generated studio
+shot and the cutout, because `dominantColors` ignores transparent pixels (so a cutout reports
+garment colours instead of half bedsheet) and a clean isolated garment yields better colour
+and pattern calls than a crumpled flat-lay. Garment boxes come from `extractBoundingBox` on
+the ORIGINALS, so each AI call has exactly one job; the found boxes are folded back into
+`ai_raw` because that column stores the whole inference and the product-shot prompt does not
+ask for boxes. Accepted cost: two AI calls and ~40 s per upload instead of one — Dinesh's
+call, "uploads do not need to be instant."
+
+## 2026-07-25 — The image prompt separates PRESENTATION from IDENTITY
+Look and feel comes from consistency, not per-image beauty, so the prompt pins one pose, one
+lighting setup and one framing for every garment — a grid of them has to read as one shoot.
+Identity (colour, pattern, print placement, construction, logos, proportions) is fenced off
+as untouchable. The deliberate change: presentation now explicitly permits pressing the
+garment — smoothing the random creases of the source photo — because the previous "preserve
+EXACTLY what the source shows" faithfully reproduced bedsheet wrinkles, which is what made
+the catalog look cheap. A shot that looks great but is not his garment is still a failure.
+
+## 2026-07-25 — Internet-facing behind a password, with a delay instead of a lockout
+`psos-app` now allows tcp:3000 from `0.0.0.0/0` (Dinesh's call: his home IP rotates and he
+wants phone access), gated by `PSOS_PASSWORD`. Order matters — the gate was verified live
+before the firewall opened. The password lives only in root-owned `/etc/psos.env`, set by
+`/usr/local/bin/psos-set-password` on the VM so it never has to pass through a transcript;
+`EnvironmentFile` + restart is enough, no rebuild (verified). `/api/auth/login` is throttled
+by a progressive DELAY (3 free attempts, then 250ms doubling to 5s, cleared by a correct
+password) rather than a lockout: a hard block would let anyone who can reach the port lock
+Dinesh out of his own wardrobe, trading a remote risk for a guaranteed annoyance. Still plain
+HTTP — the password crosses the wire in the clear, which is the standing argument for the
+Cloudflare Tunnel on the backlog.
+
+## 2026-07-25 — sharp silently changes channel counts; always assert
+Two full debugging sessions were lost to the same class of bug, so it is written down.
+`sharp().blur()` runs in sRGB, so blurring a **1-channel** raw buffer returns **three**
+channels — `joinChannel(alpha, {channels: 1})` then reads the first third of an interleaved
+RGB buffer and produces a sheared, geometric mask while `keptFraction` still looks healthy.
+Separately, `removeAlpha()` and `joinChannel()` in the SAME chain strips the joined channel.
+Rules: never chain channel-count-changing ops, use `toColourspace("b-w")` after operating on
+a mask, and assert buffer length equals `w * h` before joining. Also: keying a flat backdrop
+must ERODE the kept region before feathering — the boundary ring is a garment/backdrop blend,
+and feathering makes it translucent without fixing its colour, which put a bright halo
+(luminance 158 vs a garment at 30) around every item on the dark grid.
+
 ## 2026-07-16 (later) — VM caught up to latest code; auto-shutoff tightened to 60 min
 Pulled `608644d..feccdac` on `psos-1`, removed `PSOS_DISABLE_BG_REMOVAL` from
 `psos.service` (the child-process cutout fix is platform-independent, so the
