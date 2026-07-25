@@ -13,11 +13,14 @@
  */
 import { generateContent, firstImage, inlineImage } from "@/server/ai/vertex-client";
 
+// Verified against `listModels()` on 2026-07-25. Cheap-first: flash-image tiers
+// before the pro/nano-banana-pro tiers.
 const DEFAULT_MODELS = [
+  "gemini-3.1-flash-image",
   "gemini-2.5-flash-image",
-  "gemini-3-pro-image-preview",
-  "gemini-2.5-flash-image-preview",
-  "gemini-2.0-flash-preview-image-generation",
+  "gemini-3.1-flash-lite-image",
+  "gemini-3-pro-image",
+  "nano-banana-pro-preview",
 ];
 
 export function imageModels(): string[] {

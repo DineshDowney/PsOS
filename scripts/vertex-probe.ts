@@ -23,11 +23,10 @@ import {
 import { imageModels } from "../src/server/ai/image-generation";
 
 const TEXT_CANDIDATES = [
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-2.0-flash",
-  "gemini-3-pro",
-  "gemini-3-flash",
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-2.5-flash-lite",
 ];
 
 async function probeText(model: string): Promise<string> {
