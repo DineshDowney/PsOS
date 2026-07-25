@@ -33,7 +33,7 @@ const PROMPT = `Recreate the garment in this photo as a clean e-commerce product
 
 Requirements:
 - Show ONLY the garment, laid flat and centered, filling most of the frame, shot straight on.
-- Background: seamless, even, very light neutral grey (#f2f2f0). No gradient, no props, no shadows cast onto the background, no floor line, no text, no watermark.
+- Background: FULLY TRANSPARENT (alpha channel, PNG). If a transparent background is not possible, use a perfectly uniform very light neutral grey (#f2f2f0) instead. No gradient, no props, no shadows cast onto the background, no floor line, no text, no watermark.
 - Remove the wearer, skin, hair, hands, feet, mannequin, hanger, tripod, stand, and every part of the room.
 - Preserve EXACTLY what the source shows: colour and shade, pattern, print placement and scale, silhouette, sleeve and hem length, collar and cuff construction, visible seams, buttons, zips, drawstrings, and any legible logo or text.
 - Do NOT invent, add, restyle, or "improve" anything: no new logos, no added text, no extra pockets or seams, no changed colour, no added folds or styling flourishes. If a detail is unclear in the source, omit it rather than guess.

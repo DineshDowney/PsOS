@@ -23,6 +23,25 @@ possible. All Gemini calls run **on the VM** — never from the laptop.
 | Vertex API key | Rotated clean 2026-07-25; only copy is a local scratch file → goes to VM `.env.local` |
 | Gemini integration | **In progress** (this session) |
 
+## Live findings (2026-07-25 session)
+
+Verified against the real API, in order:
+
+1. **API keys do not work on the Vertex REST surface.** `aiplatform.googleapis.com/v1/projects/…`
+   returns 401 "Expected OAuth2 access token". An AI Studio key belongs to the Gemini
+   Developer API (`generativelanguage.googleapis.com`). Client now targets that.
+2. **The AI Studio project (`tensile-market-502810-v9`) is blocked**: 403 "Your project has
+   been denied access" on every current model, despite billing being enabled. Abandoned it.
+3. **A key minted in the psos project works** — `gemini-flash-latest`, `gemini-3.6-flash`,
+   `gemini-3.5-flash` all return 200. Extraction path is therefore viable.
+4. **Image generation is blocked by free-tier quota**: every image model
+   (`gemini-3.1-flash-image`, `gemini-2.5-flash-image`, `gemini-3-pro-image`,
+   `nano-banana-pro-preview`) returns 429 with quota id
+   `GenerateRequestsPerDayPerProjectPerModel-FreeTier`. Cloud billing enabled ≠ Gemini API
+   paid tier. **This is the current blocker for regeneration.**
+5. Model ids in my defaults were stale; now taken from a live `listModels()` call
+   (`scripts/vertex-probe.ts` prints what a key can actually reach).
+
 ## Plan for this session
 
 1. ~~Rotate the exposed API keys~~ — done (3 deleted, 1 clean key created).

@@ -99,11 +99,18 @@ function sourcePhoto(itemId: string): { buffer: Buffer; mime: string } | null {
 }
 
 /**
- * Turn a generated shot into a transparent cutout. Flat-key first (we control
- * the background, so it is both cheaper and more reliable than ML), then
- * segmentation, then give up. QA decides in every case.
+ * Turn a generated shot into a transparent cutout, cheapest rung first:
+ *   1. the model already emitted usable alpha — nothing to do (we ask for it);
+ *   2. flat-key the uniform background we requested as its fallback;
+ *   3. ML segmentation as a last resort.
+ * `cutoutQa` is the judge at every rung, so "did the model give us real
+ * transparency?" needs no separate detector: an opaque image fails its
+ * corner/border checks by definition.
  */
 async function cutoutFromGenerated(png: Buffer): Promise<{ png: Buffer; how: string } | null> {
+  const native = await cutoutQa(png);
+  if (native.ok) return { png, how: "native transparency (no post-processing)" };
+
   const flat = await keyFlatBackground(png);
   if (flat) {
     const qa = await cutoutQa(flat.png);
