@@ -159,6 +159,38 @@ Verified against the real API / real images, in order:
     regeneration of the affected items. **This will hit every white shirt in the next bulk
     upload**, so it is worth doing before the batch, not after.
 
+    **Fixed 2026-07-26 (`f7478a6`), and the "thin margin" claim above was wrong.** Sweeping the
+    tolerance across all 17 generated fronts instead of reasoning from one measurement: **16 of
+    17 key byte-identically at 20 and at 30**. The backdrops we ask for are flat enough that the
+    extra reach bought nothing, so lowering the default to 20 is not a trade — it repaired the
+    three pale garments and changed nothing else. No chroma-key, no prompt change, no
+    regeneration, no spend. The floor was measured too: at 10 a legitimately keyable 239,239,239
+    backdrop starts surviving in patches, so 20 sits between that and the ~26 where pale fabric
+    starts being eaten. Chroma-key remains the answer if a genuinely off-white garment ever
+    appears (a cream shirt against a 230 backdrop is unkeyable by colour distance at any
+    tolerance) — but it was not needed for these, and recommending it first was over-engineering.
+
+    Two things measured and **rejected**, recorded so they are not re-tried:
+    - **Differential kept-fraction** (key at two tolerances, flag a big gap): the bites are only
+      ~2% of the frame, below the noise floor. Also falsely rejects a healthy 239-backdrop item.
+    - **Silhouette roughness** (perimeter/√area) as an absolute QA gate: a *clean* plaid shirt
+      scores 6.20 and a *bitten* tee 5.22, so no threshold separates them. It works beautifully
+      as a differential, but that is circular — if you can tell 20 beats 30, just use 20.
+
+19. **`cutoutQa` was blind to the damage it exists to catch.** [Certain] Every one of the bitten
+    cutouts **passed** QA, and so did the cap: its generation came back on a non-flat backdrop
+    with a slab of it floating above the brim, 73% of the frame opaque, touching no corner and no
+    border — under the old 92% ceiling. QA is the ladder's only judge at every rung, so a blind
+    judge means silently shipping a broken tile, which is the never-fail-silently rule violated
+    at the one place it matters.
+
+    A generated shot is framed by *our own prompt* ("an even margin of empty space on all four
+    sides"), so it can never legitimately fill most of the frame — healthy cutouts keep 23–45%.
+    `cutoutFromGenerated` now holds its input to a **60% ceiling** (15 points of clearance over
+    the worst healthy item). The cap now fails flat-key QA, falls through to segmentation, and
+    comes out clean — including the speckled top edge from finding 16. The default stays 92%
+    because other callers pass bbox crops, where a garment legitimately does fill the frame.
+
 18. **The back photo never reaches the catalog tile.** Traced every consumer: the back feeds the
     garment box, a *second* Gemini image call, a back cutout, and a second image on the metadata
     call — but `bestFront()` is front-only by construction. `describeInput()`
@@ -233,29 +265,27 @@ See `deploy/vm/README.md` for the units, the install steps and the Tailscale got
 
 Highest value first:
 
-1. **Fix the light-garment cutout failure** (finding 17) — 4 of 15 tiles are damaged and every
-   white shirt in the next batch will hit it. Confirm with `scripts/cutout-diag.ts` first, then
-   the likely fix is in `imaging/flat-key.ts` (tolerance is tuned for dark garments on a light
-   backdrop) or in the prompt's choice of backdrop tone. Also worth checking whether these
-   failed `cutoutQa` and were accepted on rung 4 with only a logged warning.
+1. **UI redesign (Phase C).** Next up — Dinesh, 2026-07-26, immediately after the cutout fix.
+   Measured complaint: 12 motion-related utilities across 1,958 lines of TSX, no animation
+   library — but the real cause is structural, not decorative: every screen is `"use client"` +
+   fetch-after-hydration, so first paint is an empty page with a spinner. Server-render the first
+   screenful before touching any visual direction.
 2. **Housekeeping from the contact sheet** (finding 16): un-archive one Indigo Block-Print
    Kurta, name + categorise the two unnamed items, resolve or discard the stuck draft, and move
    `Maroon Jockey Boxer Briefs` off `accessory`.
 3. **Catalog the rest of the wardrobe, front-only.** The pipeline is ready and one-shot per
    garment; this is photo-taking work now, not engineering work. Front-only halves the image
    calls and the quota stalling (finding 18).
-4. **UI redesign (Phase C).** Deferred by Dinesh 2026-07-26, not dropped. Measured complaint:
-   12 motion-related utilities across 1,958 lines of TSX, no animation library — but the real
-   cause is structural, not decorative: every screen is `"use client"` + fetch-after-hydration,
-   so first paint is an empty page with a spinner. Server-render the first screenful before
-   touching any visual direction.
-5. **Bulk import UI** — `<input multiple>` → one photo = one garment → N POSTs. Backend needs no
+4. **Bulk import UI** — `<input multiple>` → one photo = one garment → N POSTs. Backend needs no
    changes. Cut from Phase B by Dinesh; still worth having before a 40-garment batch.
-6. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
+5. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
    `instances.start`, so hitting a URL from the phone boots the VM.
-7. Retry for partially-failed import jobs (a stage failed but the job reached
+6. Retry for partially-failed import jobs (a stage failed but the job reached
    `ready_for_review` — currently only wholly-failed jobs can retry).
-8. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
+7. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
+8. **Chroma-key backdrop**, if a genuinely off-white garment ever fails (finding 17). Not needed
+   for the current wardrobe; only pay the prompt change + regeneration when something actually
+   breaks.
 
 Considered and **rejected**: paying for a domain (no free path exists via GCP — see DECISIONS);
 tailnet-only `tailscale serve` (more secure, but Dinesh wants the URL to work without a

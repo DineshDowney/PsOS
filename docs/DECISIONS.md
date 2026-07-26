@@ -3,6 +3,50 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-26 — Cutout QA gets a tighter ceiling when we control the framing
+`cutoutQa` is the cutout ladder's only judge, at every rung. It was blind to the most common
+damage mode: pale garments bitten by the flood fill all **passed**, and so did the yellow cap,
+whose generation came back on a non-flat backdrop with a slab of it floating above the brim —
+73% of the frame opaque, touching no corner and no border, under the 92% ceiling. A blind judge
+means silently shipping a broken tile.
+
+Rather than add a geometric heuristic, the fix uses information we already have: a generated shot
+is framed by *our own prompt*, which demands "an even margin of empty space on all four sides".
+So it can never legitimately fill most of the frame. Healthy cutouts keep 23–45%, so
+`cutoutFromGenerated` holds its input to a **60%** ceiling and the cap now falls through to
+segmentation, which keys it cleanly.
+
+The ceiling is a caller option, not a new global. Other callers pass **bbox crops with ~8%
+padding**, where a garment legitimately does fill the frame, so the default stays 92%. The
+principle: how much of the frame is plausible depends on who chose the frame, so the caller that
+chose it sets the bound.
+
+**Silhouette roughness** (perimeter/√area) was measured as a general-purpose alternative and
+rejected: a clean plaid shirt scores 6.20 while a bitten tee scores 5.22, so no absolute
+threshold separates damage from a genuinely intricate outline.
+
+## 2026-07-26 — Flat-key tolerance 30 → 20, chosen by sweeping the wardrobe not by one measurement
+Three pale garments were losing chunks of their silhouettes. Diagnosed from a single image the
+day before, the conclusion was that the margin was hopelessly thin (2657 against a 2700
+threshold) and the only structural fix was a **chroma-key backdrop** plus regeneration.
+
+Sweeping the tolerance across all 17 generated fronts said otherwise: **16 of 17 key
+byte-identically at 20 and at 30.** The extra reach was buying nothing, because the backdrops we
+ask for are flat. So lowering the default is not a trade of backdrop coverage against garment
+safety — it repairs the three and changes nothing else. No prompt change, no regeneration, no
+Vertex spend. Recommending chroma-key first was over-engineering from a sample of one.
+
+The floor was measured too, so 20 is not taste: at 10 a legitimately keyable 239,239,239 backdrop
+starts surviving in patches, and pale fabric starts being eaten around 26.
+
+Chroma-key is still the only answer for a **genuinely off-white** garment — a cream shirt against
+a 230 backdrop is unkeyable by colour distance at any tolerance — so it stays in the backlog,
+unbuilt, until something actually fails.
+
+`scripts/rekey-images.ts` exists because of this: re-running the ladder over generations we
+already have costs nothing, while regenerating to pick up a keying fix would pay $0.04 an image
+to get the same pixels back. 24 sides re-keyed on the VM, 24 clean, 0 needing attention.
+
 ## 2026-07-26 — HTTPS via Tailscale Funnel; no domain bought, no inbound port
 The app was internet-facing on plain HTTP at a raw IP (`http://34.100.219.116:3000`) with the
 firewall open to `0.0.0.0/0`, so the shared password crossed the wire in cleartext and the
