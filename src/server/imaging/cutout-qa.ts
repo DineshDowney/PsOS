@@ -11,7 +11,8 @@ import sharp from "sharp";
  *   1. all four corner patches are essentially transparent
  *   2. the 1-pixel-band border is mostly transparent
  *   3. the opaque area is a sane fraction of the image (not empty, not a
- *      full-frame smear)
+ *      full-frame smear) — the upper bound is caller-tunable, because how much
+ *      of the frame a garment may fill depends on how the frame was chosen
  */
 
 export interface CutoutQaResult {
@@ -21,11 +22,24 @@ export interface CutoutQaResult {
   borderTransparentFraction: number;
 }
 
+export interface CutoutQaOptions {
+  /**
+   * Reject above this opaque fraction. The default is loose because the usual
+   * input is a tight bbox crop, where a garment legitimately fills most of the
+   * frame. Callers that control the framing should tighten it — see
+   * GENERATED_MAX_OPAQUE in cutout-ladder.ts.
+   */
+  maxOpaque?: number;
+}
+
 const CORNER = 8; // px patch per corner
 const ALPHA_OPAQUE = 200; // 0-255; above = counts as solid
 const ALPHA_CLEAR = 40; // below = counts as transparent
 
-export async function cutoutQa(png: Buffer): Promise<CutoutQaResult> {
+export async function cutoutQa(
+  png: Buffer,
+  { maxOpaque = 0.92 }: CutoutQaOptions = {},
+): Promise<CutoutQaResult> {
   const { data, info } = await sharp(png)
     .ensureAlpha()
     .raw()
@@ -106,10 +120,10 @@ export async function cutoutQa(png: Buffer): Promise<CutoutQaResult> {
   if (opaqueFraction < 0.08) {
     return { ok: false, reason: "cutout nearly empty", opaqueFraction, borderTransparentFraction };
   }
-  if (opaqueFraction > 0.92) {
+  if (opaqueFraction > maxOpaque) {
     return {
       ok: false,
-      reason: "cutout covers almost the whole frame — background kept",
+      reason: `cutout keeps ${(opaqueFraction * 100).toFixed(0)}% of the frame (limit ${(maxOpaque * 100).toFixed(0)}%) — background kept`,
       opaqueFraction,
       borderTransparentFraction,
     };

@@ -13,7 +13,10 @@
 import sharp from "sharp";
 
 export interface FlatKeyOptions {
-  /** Per-channel colour distance still considered "background". */
+  /**
+   * Per-channel colour distance still considered "background". See
+   * DEFAULT_TOLERANCE for why the default is what it is.
+   */
   tolerance?: number;
   /** Soften the alpha edge by this blur sigma (0 = hard edge). */
   feather?: number;
@@ -33,6 +36,30 @@ export interface FlatKeyResult {
 const CORNER_PATCH = 12;
 /** Keep opaque blobs at least this fraction of the biggest one; clear the rest. */
 const BLOB_KEEP_RATIO = 0.15;
+
+/**
+ * How close to the corner colour still counts as backdrop.
+ *
+ * Was 30 until 2026-07-26, which ate pale garments. The fill is connected, so
+ * one pixel of fabric falling inside the tolerance opens a channel and the fill
+ * chews a bite out of the silhouette — measured on the oatmeal tee
+ * (3bbdf251): backdrop 230,230,231 against fabric 206-213/203-208/191-195,
+ * a squared distance of 1998-2674 against a 30-tolerance threshold of 2700.
+ * The tee lost a chunk of its shoulder, the pale boxer briefs lost both top
+ * corners, the checked shirt's right sleeve went sawtooth.
+ *
+ * 20 (threshold 1200) clears those with room to spare. Measured across the
+ * whole wardrobe: 16 of 17 generated fronts key IDENTICALLY at 20 and at 30, so
+ * this is not a trade of backdrop coverage for garment safety — the backdrops
+ * we ask for are flat enough that the extra reach bought nothing. The 17th
+ * (8d05cc43) came back with a non-flat backdrop and cannot be keyed at any
+ * tolerance; that is what the maxOpaque check in cutoutFromGenerated is for.
+ *
+ * The floor matters too: at 10 a legitimately keyable 239,239,239 backdrop
+ * starts surviving in patches. 20 sits between that floor and the ~26 where
+ * pale fabric starts being eaten.
+ */
+const DEFAULT_TOLERANCE = 20;
 
 /**
  * Clear opaque specks the flood fill could not reach.
@@ -119,7 +146,7 @@ function erodeKept(cleared: Uint8Array, w: number, h: number): void {
 
 export async function keyFlatBackground(
   input: Buffer,
-  { tolerance = 30, feather = 0.6, erode = 2 }: FlatKeyOptions = {},
+  { tolerance = DEFAULT_TOLERANCE, feather = 0.6, erode = 2 }: FlatKeyOptions = {},
 ): Promise<FlatKeyResult | null> {
   const { data, info } = await sharp(input)
     .removeAlpha()

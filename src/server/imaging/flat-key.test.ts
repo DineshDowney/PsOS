@@ -137,6 +137,32 @@ describe("keyFlatBackground", () => {
     expect(await alphaAt(out!.png, 60, 50)).toBe(255); // garment kept
   });
 
+  // Regression (2026-07-26): the default tolerance of 30 ate pale garments. The
+  // fill is connected, so fabric within tolerance anywhere on the silhouette
+  // opens a channel and a bite gets chewed out of the garment. These colours are
+  // the measured ones from the oatmeal tee (3bbdf251): backdrop 230,230,231
+  // against fabric ~209,205,193, which sat inside 30 and outside 20.
+  it("keeps pale fabric that sits just inside the old tolerance", async () => {
+    const img = await shot({ bg: "#e6e6e7", fg: "#d1cdc1" });
+    const out = await keyFlatBackground(img, { feather: 0 });
+    expect(out).not.toBeNull();
+    expect(await alphaAt(out!.png, 2, 2)).toBe(0); // backdrop still cleared
+    expect(await alphaAt(out!.png, 60, 60)).toBe(255); // pale garment survives
+    // The bite entered from the garment's edge, so check the corners of the box
+    // (30,30)-(89,89) rather than only its middle. Erosion trims 2px by design.
+    expect(await alphaAt(out!.png, 34, 34)).toBe(255);
+    expect(await alphaAt(out!.png, 85, 34)).toBe(255);
+    expect(await alphaAt(out!.png, 34, 85)).toBe(255);
+    expect(await alphaAt(out!.png, 85, 85)).toBe(255);
+  });
+
+  it("still eats that fabric at the old tolerance (the fix is the default, not luck)", async () => {
+    const img = await shot({ bg: "#e6e6e7", fg: "#d1cdc1" });
+    // Same image, old default: the garment is indistinguishable from backdrop, so
+    // the fill takes essentially everything and flat-key fails closed.
+    expect(await keyFlatBackground(img, { tolerance: 30, feather: 0 })).toBeNull();
+  });
+
   it("returns null when the garment matches the background (nothing to key)", async () => {
     const img = await shot({ bg: "#f2f2f0", fg: "#f1f1ef" });
     expect(await keyFlatBackground(img)).toBeNull();

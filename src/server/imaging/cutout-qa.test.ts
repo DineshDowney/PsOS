@@ -52,4 +52,20 @@ describe("cutoutQa", () => {
     const r = await cutoutQa(png);
     expect(r.ok).toBe(false);
   });
+
+  // Regression (2026-07-26): a slab of surviving backdrop floating above the
+  // yellow cap (8d05cc43) passed QA, because it touched no corner and no border
+  // and the frame was only 73% opaque — under the old 92% ceiling. Callers that
+  // know the framing get to tighten the ceiling.
+  it("honours a caller-supplied opaque ceiling", async () => {
+    // 170x170 of 200x200 = 72% opaque, inset from every border.
+    const png = await cutoutWithRect({ left: 15, top: 15, width: 170, height: 170 });
+
+    const loose = await cutoutQa(png);
+    expect(loose.ok).toBe(true); // default ceiling still lets a tight crop through
+
+    const tight = await cutoutQa(png, { maxOpaque: 0.6 });
+    expect(tight.ok).toBe(false);
+    expect(tight.reason).toMatch(/background kept/);
+  });
 });

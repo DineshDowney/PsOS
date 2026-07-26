@@ -28,13 +28,27 @@ export interface Cutout {
   clean: boolean;
 }
 
+/**
+ * A generated shot is framed by our own prompt: "an even margin of empty space
+ * on all four sides". So unlike a bbox crop, it can never legitimately fill most
+ * of the frame, and anything that does is surviving backdrop.
+ *
+ * Measured over the wardrobe on 2026-07-26: healthy cutouts keep 23-45% of the
+ * frame. 8d05cc43 came back on a non-flat grey backdrop and kept 73% — a slab
+ * of backdrop floating above the cap — and sailed through QA on the old 92%
+ * bound, because the slab touched no border and no corner. 60% clears every
+ * healthy item by 15 points and catches that one.
+ */
+const GENERATED_MAX_OPAQUE = 0.6;
+
 export async function cutoutFromGenerated(png: Buffer): Promise<Cutout | null> {
-  const native = await cutoutQa(png);
+  const qaOpts = { maxOpaque: GENERATED_MAX_OPAQUE };
+  const native = await cutoutQa(png, qaOpts);
   if (native.ok) return { png, how: "native transparency", clean: true };
 
   const flat = await keyFlatBackground(png);
   if (flat) {
-    const qa = await cutoutQa(flat.png);
+    const qa = await cutoutQa(flat.png, qaOpts);
     if (qa.ok) {
       return {
         png: flat.png,
@@ -46,12 +60,12 @@ export async function cutoutFromGenerated(png: Buffer): Promise<Cutout | null> {
 
   const seg = await removeBackground(png);
   if (seg) {
-    const qa = await cutoutQa(seg.png);
+    const qa = await cutoutQa(seg.png, qaOpts);
     if (qa.ok) return { png: seg.png, how: "segmentation", clean: true };
   }
 
   if (flat) {
-    const qa = await cutoutQa(flat.png);
+    const qa = await cutoutQa(flat.png, qaOpts);
     return { png: flat.png, how: `flat-key, QA warning: ${qa.reason}`, clean: false };
   }
   return null;
