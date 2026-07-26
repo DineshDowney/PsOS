@@ -92,6 +92,7 @@ export const itemImages = sqliteTable(
         "transparent_front",
         "transparent_back",
         "thumbnail",
+        "thumbnail_back",
       ],
     }).notNull(),
     /** path relative to the data/images root */

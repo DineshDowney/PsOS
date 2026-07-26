@@ -38,7 +38,13 @@ export type ImageRole =
   | "generated_back"
   | "transparent_front"
   | "transparent_back"
-  | "thumbnail";
+  | "thumbnail"
+  // The catalog tile for the BACK side, same 640px/88%-occupancy treatment as
+  // `thumbnail`. Added 2026-07-26 so the wardrobe grid can rotate through both
+  // sides instead of showing front only. `role` is a plain TEXT column with no
+  // SQL CHECK constraint (see schema.ts) — adding a value here is a TypeScript
+  // change only, no migration.
+  | "thumbnail_back";
 
 export interface ItemImage {
   id: string;

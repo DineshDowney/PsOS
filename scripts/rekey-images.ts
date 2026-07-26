@@ -9,8 +9,14 @@
  * to pick up a keying fix would be paying $0.04 an image to get the same pixels
  * back.
  *
- * Only touches the `transparent_*` roles and the thumbnail. Originals, crops and
- * the archived raw generations are never written.
+ * Only touches the `transparent_*` roles and the two tile roles (`thumbnail`,
+ * `thumbnail_back`). Originals, crops and the archived raw generations are
+ * never written.
+ *
+ * Also doubles as the backfill for `thumbnail_back` (added 2026-07-26 so the
+ * wardrobe grid can rotate front/back): any item with a stored
+ * `generated_back` but no `thumbnail_back` row gets one derived from what is
+ * already on disk — no Gemini call.
  *
  * Run: npx tsx scripts/rekey-images.ts [--dry-run] [--only <itemId>]
  *          [--side front|back] [--all]
@@ -61,10 +67,18 @@ function upsertImage(itemId: string, role: string, absPath: string, buffer: Buff
     .run();
 }
 
-function setThumbnail(itemId: string, absPath: string, buffer: Buffer, w: number, h: number): void {
-  const existing = imageRow(itemId, "thumbnail");
+/** `role` is "thumbnail" or "thumbnail_back" — same upsert either side. */
+function setThumbnail(
+  itemId: string,
+  role: string,
+  absPath: string,
+  buffer: Buffer,
+  w: number,
+  h: number,
+): void {
+  const existing = imageRow(itemId, role);
   if (!existing) {
-    upsertImage(itemId, "thumbnail", absPath, buffer);
+    upsertImage(itemId, role, absPath, buffer);
     return;
   }
   db.update(schema.itemImages)
@@ -82,24 +96,32 @@ function generation(itemId: string, side: Side): Buffer | null {
   return fs.readFileSync(abs);
 }
 
-/** Repoint the catalog tile at the new cutout, exactly as regenerate does. */
+/**
+ * Repoint a catalog tile (front or back) at the new cutout, exactly as
+ * regenerate does. `side` picks the role and filename — this is also what
+ * backfills `thumbnail_back` for items that had a back generation before that
+ * role existed, at $0 (no Gemini call, just re-deriving the tile from the
+ * generation already on disk).
+ */
 async function refreshThumbnail(
   itemId: string,
   dir: string,
+  side: Side,
   cutout: Cutout | null,
   generated: Buffer,
 ): Promise<string> {
+  const role = side === "front" ? "thumbnail" : "thumbnail_back";
   if (cutout) {
     const thumb = await makeThumbnail(cutout.png, { alpha: true });
-    const p = path.join(dir, "thumbnail.png");
+    const p = path.join(dir, `${role}.png`);
     await saveBuffer(p, thumb.buffer);
-    setThumbnail(itemId, p, thumb.buffer, thumb.width, thumb.height);
+    setThumbnail(itemId, role, p, thumb.buffer, thumb.width, thumb.height);
     return "transparent tile";
   }
   const thumb = await makeThumbnail(generated);
-  const p = path.join(dir, "thumbnail.jpg");
+  const p = path.join(dir, `${role}.jpg`);
   await saveBuffer(p, thumb.buffer);
-  setThumbnail(itemId, p, thumb.buffer, thumb.width, thumb.height);
+  setThumbnail(itemId, role, p, thumb.buffer, thumb.width, thumb.height);
   return "opaque tile (no transparency available)";
 }
 
@@ -126,8 +148,8 @@ async function main() {
   for (const item of items) {
     const label = item.name || item.id.slice(0, 8);
     const dir = itemImageDir(item.id);
-    let frontCutout: Cutout | null = null;
-    let frontGenerated: Buffer | null = null;
+    const cutoutBySide: Record<Side, Cutout | null> = { front: null, back: null };
+    const generatedBySide: Record<Side, Buffer | null> = { front: null, back: null };
     let touched = false;
 
     for (const side of sides) {
@@ -137,7 +159,7 @@ async function main() {
 
       if (dryRun) {
         console.log(`- ${label} (${side}): would re-key`);
-        if (side === "front") frontGenerated = generated;
+        generatedBySide[side] = generated;
         continue;
       }
 
@@ -154,15 +176,18 @@ async function main() {
       }
       console.log(`${cutout?.clean ? "✓" : "~"} ${label} (${side}): ${cutout ? cutout.how : "no transparency"}`);
 
-      if (side === "front") {
-        frontCutout = cutout;
-        frontGenerated = generated;
-      }
+      cutoutBySide[side] = cutout;
+      generatedBySide[side] = generated;
     }
 
     if (!touched) continue;
-    if (!dryRun && frontGenerated) {
-      console.log(`  → tile: ${await refreshThumbnail(item.id, dir, frontCutout, frontGenerated)}`);
+    if (dryRun) continue;
+    for (const side of sides) {
+      const generated = generatedBySide[side];
+      if (!generated) continue;
+      console.log(
+        `  → ${side} tile: ${await refreshThumbnail(item.id, dir, side, cutoutBySide[side], generated)}`,
+      );
     }
   }
 

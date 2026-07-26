@@ -20,6 +20,7 @@ import {
   inputClass,
   garmentShadowClass,
   itemLabel,
+  orderedPhotos,
 } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
@@ -31,6 +32,7 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
   const [index, setIndex] = useState(0);
   useEffect(() => {
     if (images.length < 2) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const t = setInterval(() => setIndex((i) => (i + 1) % images.length), 4000);
     return () => clearInterval(t);
   }, [images.length]);
@@ -60,7 +62,10 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
           {images.map((img, i) => (
             <span
               key={img.id}
-              className={`h-1.5 w-1.5 rounded-full ${i === index ? "bg-fg" : "bg-line"}`}
+              className={clsx(
+                "h-1.5 w-1.5 rounded-full transition-[transform,background-color] duration-200",
+                i === index ? "scale-125 bg-fg" : "bg-line",
+              )}
             />
           ))}
         </div>
@@ -214,18 +219,15 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
         </div>
       ) : null}
 
-      <div className="grid gap-10 lg:grid-cols-[minmax(280px,420px)_1fr]">
+      {/* 420 -> 480: "make the item image bigger" applied here too, not just the grid */}
+      <div className="grid gap-10 lg:grid-cols-[minmax(300px,480px)_1fr]">
         <div className="flex flex-col gap-5">
-          {/* Cropped garment shots only — raw photos (tripod, floor…) stay on disk, never shown */}
-          <RotatingPhotos
-            name={itemLabel(item)}
-            images={(["front", "back"] as const)
-              .map((side) => {
-                const cropped = item.images.find((i) => i.role === `${side}_cropped`);
-                return cropped ?? item.images.find((i) => i.role === side);
-              })
-              .filter((img): img is NonNullable<typeof img> => Boolean(img))}
-          />
+          {/*
+           * Studio regenerations first, raw photos last (Dinesh, 2026-07-26:
+           * "the first two photos should be regen ones, then the og") — see
+           * orderedPhotos() in ui.tsx for the exact fallback chain per slot.
+           */}
+          <RotatingPhotos name={itemLabel(item)} images={orderedPhotos(item)} />
           {item.images.length === 0 ? (
             <div className="flex aspect-square items-center justify-center text-faint">
               no photos

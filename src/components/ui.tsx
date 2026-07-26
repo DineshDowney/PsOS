@@ -1,7 +1,8 @@
 "use client";
 
 import clsx from "clsx";
-import type { Item } from "@/shared/types";
+import { useEffect, useState } from "react";
+import type { ImageRole, Item, ItemImage } from "@/shared/types";
 import Link from "next/link";
 
 /** Tracked uppercase micro-label — the one normalization point for section headers. */
@@ -60,7 +61,7 @@ export function SegmentedControl({
           type="button"
           onClick={() => onChange(opt.value)}
           className={clsx(
-            "relative -ml-px shrink-0 whitespace-nowrap border border-line px-3.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.08em] transition-colors first:ml-0",
+            "relative -ml-px shrink-0 whitespace-nowrap border border-line px-3.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.08em] transition-[color,background-color,border-color,transform] duration-200 first:ml-0 active:scale-95",
             opt.value === value
               ? "z-10 border-fg bg-fg text-bg"
               : "text-muted hover:text-fg",
@@ -94,7 +95,9 @@ export function Button({
       onClick={onClick}
       disabled={disabled}
       className={clsx(
-        "px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+        // scale-95 on press is the one motion cue that reaches touch AND mouse
+        // for free — :active fires on tap, not just click-and-hold.
+        "px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] transition-[color,background-color,border-color,transform] duration-150 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100",
         variant === "outline" && "border border-line text-fg hover:border-muted",
         variant === "solid" && "bg-fg text-bg hover:bg-accent hover:text-accent-fg",
         variant === "ghost" && "text-muted hover:text-fg",
@@ -151,6 +154,22 @@ export function itemThumb(item: Item): string | null {
 }
 
 /**
+ * The back-side counterpart to `itemThumb`. Returns null for the ~third of
+ * the wardrobe imported front-only — there is nothing to rotate to, and the
+ * grid tile for those items simply does not flip.
+ *
+ * `thumbnail_back` is the normalized 640px/88%-occupancy tile (added
+ * 2026-07-26, backfilled by `scripts/rekey-images.ts`); until that backfill
+ * runs on an older item this falls through to the raw `transparent_back`,
+ * which is a different size/position than the front tile — the flip will
+ * look slightly off until the backfill catches up, not wrong.
+ */
+export function itemThumbBack(item: Item): string | null {
+  const byRole = (role: string) => item.images.find((i) => i.role === role)?.url;
+  return byRole("thumbnail_back") ?? byRole("transparent_back") ?? byRole("back") ?? null;
+}
+
+/**
  * What a garment is called on screen. The single definition — no screen builds
  * its own.
  *
@@ -172,8 +191,66 @@ export function garmentShadowClass(url: string | null): string | undefined {
   return url && url.includes(".png") ? "garment-shadow" : undefined;
 }
 
+/**
+ * Photos for the item page, in display order: the studio regenerations first,
+ * then the two originals as they came off the phone.
+ *
+ * Dinesh, 2026-07-26: "the first two photos should be regen ones, then the
+ * og." Each regen slot falls back to a transparent cutout or the tight crop
+ * when that side was never (re)generated — degrading the same way the rest of
+ * the pipeline does — rather than disappearing outright.
+ */
+export function orderedPhotos(item: Item): ItemImage[] {
+  const bestOf = (roles: ImageRole[]): ItemImage | undefined => {
+    for (const role of roles) {
+      const found = item.images.find((i) => i.role === role);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return [
+    bestOf(["generated_front", "transparent_front", "front_cropped"]),
+    bestOf(["generated_back", "transparent_back", "back_cropped"]),
+    bestOf(["front"]),
+    bestOf(["back"]),
+  ].filter((img): img is ItemImage => Boolean(img));
+}
+
 /** Past this many tiles the entrance stagger stops, so late tiles don't wait. */
 const STAGGER_CAP = 12;
+
+/**
+ * Cycles a two-sided tile front/back on a timer, but ONLY on a device that
+ * cannot hover — hover already does this instantly and for free via CSS
+ * (`.flip-back` under `@media (hover: hover)` in globals.css), and a timer
+ * fighting a hover transition looks like a glitch. Also stays off entirely
+ * under prefers-reduced-motion, matching every other ambient animation here.
+ *
+ * `index` staggers the start so a grid of these doesn't flip in unison, which
+ * reads as one blinking wall rather than a wardrobe.
+ */
+function useAutoFlip(hasBack: boolean, index: number): boolean {
+  const [flipped, setFlipped] = useState(false);
+  useEffect(() => {
+    if (!hasBack || typeof window === "undefined") return;
+    if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const PERIOD_MS = 4200;
+    const stagger = (index % 6) * 650;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const start = setTimeout(() => {
+      setFlipped((f) => !f);
+      interval = setInterval(() => setFlipped((f) => !f), PERIOD_MS);
+    }, PERIOD_MS + stagger);
+
+    return () => {
+      clearTimeout(start);
+      if (interval) clearInterval(interval);
+    };
+  }, [hasBack, index]);
+  return flipped;
+}
 
 export function ItemCard({
   item,
@@ -182,31 +259,38 @@ export function ItemCard({
 }: {
   item: Item;
   footer?: React.ReactNode;
-  /** Position in the grid — drives the entrance stagger only. */
+  /** Position in the grid — drives the entrance and flip stagger only. */
   index?: number;
 }) {
-  const thumb = itemThumb(item);
+  const front = itemThumb(item);
+  const back = itemThumbBack(item);
+  const hasBack = Boolean(back && back !== front);
   const label = itemLabel(item);
+  const flipped = useAutoFlip(hasBack, index);
+
   return (
     <div
-      className="tile-in group flex flex-col"
+      className={clsx("tile-in group flex flex-col", flipped && "tile-flipped")}
       style={{ "--i": Math.min(index, STAGGER_CAP) } as React.CSSProperties}
     >
       <Link
         href={`/items/${item.id}`}
         // Paper ground: the thumbnails are transparent cutouts, so a pale garment
-        // needs something other than the white page behind it.
-        className="relative block aspect-[0.78] overflow-hidden bg-surface"
+        // needs something other than the white page behind it. Square, not the
+        // portrait ratio the reference used — the thumbnail pipeline already
+        // trims + recenters the garment at 88% of a SQUARE canvas, so a portrait
+        // box just adds letterboxing on top of that.
+        className="relative block aspect-square overflow-hidden bg-surface"
         title={item.name || undefined}
       >
-        {thumb ? (
+        {front ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={thumb}
+            src={front}
             alt={label}
             className={clsx(
-              "garment-lift h-full w-full object-contain p-5",
-              garmentShadowClass(thumb),
+              "flip-front garment-lift absolute inset-0 h-full w-full object-contain",
+              garmentShadowClass(front),
             )}
             loading="lazy"
           />
@@ -215,6 +299,18 @@ export function ItemCard({
             no photo
           </div>
         )}
+        {hasBack ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={back!}
+            alt={`${label} — back`}
+            className={clsx(
+              "flip-back garment-lift absolute inset-0 h-full w-full object-contain",
+              garmentShadowClass(back),
+            )}
+            loading="lazy"
+          />
+        ) : null}
         {item.status !== "available" ? (
           <div className="absolute left-2 top-2">
             <StatusBadge status={item.status} />

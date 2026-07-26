@@ -144,7 +144,13 @@ export async function makeThumbnail(
       .toBuffer();
     return { buffer, width: TILE_SIZE, height: TILE_SIZE };
   }
-  const background = opts.background ?? "#111110";
+  // Paper, matching --color-surface in globals.css — this is the tile ground
+  // an opaque (no-cutout) fallback flattens onto. Was #111110, the old dark
+  // theme's surface colour, which the 2026-07-26 light-mode pass left stranded
+  // here: any item whose cutout failed was rendering a near-black square on
+  // the new white page. Keep in step with globals.css by eye; there is no
+  // shared source of truth between server-side sharp and client-side CSS.
+  const background = opts.background ?? "#f4f1ea";
   const buffer = await sharp(input)
     .resize(TILE_SIZE, TILE_SIZE, { fit: "contain", background })
     .flatten({ background })

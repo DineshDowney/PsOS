@@ -102,13 +102,35 @@ function addImageRow(
     .run();
 }
 
-/** Point the item's thumbnail row at freshly-written bytes (path may change .jpg↔.png). */
-function updateThumbnailRow(itemId: string, absPath: string, buffer: Buffer, width: number, height: number): void {
-  getDb()
-    .update(schema.itemImages)
-    .set({ path: relativeImagePath(absPath), width, height, sha256: sha256Of(buffer) })
-    .where(and(eq(schema.itemImages.itemId, itemId), eq(schema.itemImages.role, "thumbnail")))
-    .run();
+/**
+ * Point a catalog tile row (front or back) at freshly-written bytes (path may
+ * change .jpg↔.png). `thumbnail` always exists by the time this runs — `save`
+ * writes a provisional one — but `thumbnail_back` does not exist until the
+ * first back-side generation succeeds, so this upserts rather than assuming
+ * an UPDATE will hit a row.
+ */
+function upsertThumbnailRow(
+  itemId: string,
+  role: "thumbnail" | "thumbnail_back",
+  absPath: string,
+  buffer: Buffer,
+  width: number,
+  height: number,
+): void {
+  const existing = getDb()
+    .select()
+    .from(schema.itemImages)
+    .where(and(eq(schema.itemImages.itemId, itemId), eq(schema.itemImages.role, role)))
+    .get();
+  if (existing) {
+    getDb()
+      .update(schema.itemImages)
+      .set({ path: relativeImagePath(absPath), width, height, sha256: sha256Of(buffer) })
+      .where(eq(schema.itemImages.id, existing.id))
+      .run();
+    return;
+  }
+  addImageRow(itemId, role, absPath, buffer, width, height);
 }
 
 export interface StartImportInput {
@@ -326,6 +348,7 @@ interface Ctx {
   genFrontPath: string | null;
   genBackPath: string | null;
   cutoutFront: Cutout | null;
+  cutoutBack: Cutout | null;
   dominant: DominantColor[];
 }
 
@@ -343,6 +366,19 @@ function bestFront(ctx: Ctx): { buffer: Buffer; alpha: boolean } {
   if (ctx.genFront) return { buffer: ctx.genFront, alpha: false };
   if (ctx.cropFront) return { buffer: ctx.cropFront, alpha: false };
   return { buffer: ctx.front, alpha: false };
+}
+
+/**
+ * Same idea for the back, except a back photo is optional — the item may have
+ * been imported front-only, in which case there is nothing to make a tile
+ * from and the wardrobe grid simply does not rotate for this item.
+ */
+function bestBack(ctx: Ctx): { buffer: Buffer; alpha: boolean } | null {
+  if (ctx.cutoutBack) return { buffer: ctx.cutoutBack.png, alpha: true };
+  if (ctx.genBack) return { buffer: ctx.genBack, alpha: false };
+  if (ctx.cropBack) return { buffer: ctx.cropBack, alpha: false };
+  if (ctx.back) return { buffer: ctx.back, alpha: false };
+  return null;
 }
 
 /**
@@ -511,6 +547,8 @@ async function stageBackgroundRemoval(ctx: Ctx, report: Report): Promise<void> {
       if (side === "front") {
         ctx.cutoutFront = cutout;
         if (!cutout.clean) note = cutout.how;
+      } else {
+        ctx.cutoutBack = cutout;
       }
     }
 
@@ -578,11 +616,23 @@ async function stageAiMetadata(ctx: Ctx, report: Report): Promise<void> {
 async function stageThumbnail(ctx: Ctx, report: Report): Promise<void> {
   report.mark("thumbnail", { status: "running" });
   try {
-    const { buffer, alpha } = bestFront(ctx);
-    const thumb = await makeThumbnail(buffer, { alpha });
-    const p = path.join(ctx.dir, alpha ? "thumbnail.png" : "thumbnail.jpg");
+    const front = bestFront(ctx);
+    const thumb = await makeThumbnail(front.buffer, { alpha: front.alpha });
+    const p = path.join(ctx.dir, front.alpha ? "thumbnail.png" : "thumbnail.jpg");
     await saveBuffer(p, thumb.buffer);
-    updateThumbnailRow(ctx.itemId, p, thumb.buffer, thumb.width, thumb.height);
+    upsertThumbnailRow(ctx.itemId, "thumbnail", p, thumb.buffer, thumb.width, thumb.height);
+
+    // Optional: only items with a usable back side get a rotating tile. Same
+    // 640px/88%-occupancy treatment as the front, so flipping between them
+    // never jumps the garment's size or position.
+    const back = bestBack(ctx);
+    if (back) {
+      const thumbBack = await makeThumbnail(back.buffer, { alpha: back.alpha });
+      const pb = path.join(ctx.dir, back.alpha ? "thumbnail_back.png" : "thumbnail_back.jpg");
+      await saveBuffer(pb, thumbBack.buffer);
+      upsertThumbnailRow(ctx.itemId, "thumbnail_back", pb, thumbBack.buffer, thumbBack.width, thumbBack.height);
+    }
+
     report.mark("thumbnail", { status: "done" });
   } catch (err) {
     report.fail("thumbnail", err);
@@ -620,6 +670,7 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
     genFrontPath: null,
     genBackPath: null,
     cutoutFront: null,
+    cutoutBack: null,
     dominant: [],
   };
 

@@ -58,7 +58,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
           {toasts.map((t) => (
             <div
               key={t.id}
-              className={`max-w-sm border px-4 py-3 text-sm ${
+              className={`toast-in max-w-sm border px-4 py-3 text-sm shadow-[0_12px_30px_rgb(25_24_22/0.1)] ${
                 t.kind === "error"
                   ? "border-danger bg-surface text-danger"
                   : "border-line bg-surface text-fg"

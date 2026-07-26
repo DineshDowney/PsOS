@@ -117,13 +117,47 @@ html {
 }
 
 /*
+ * Wardrobe grid tile rotating between front and back (ItemCard in ui.tsx).
+ * Both images sit stacked via `absolute inset-0`; only opacity moves, so there
+ * is no layout shift and no risk of a flash of the wrong size between them —
+ * both are already the same normalized 640px/88%-occupancy tile.
+ *
+ * Two independent triggers, deliberately not fighting each other:
+ *   - hover (desktop, real pointer): instant, free, no JS.
+ *   - `.tile-flipped` (touch, via useAutoFlip in ui.tsx): a slow timer, because
+ *     touch devices have no hover to react to. The media query below is why
+ *     hover never ALSO fires the timer's device — pointer:fine excludes touch.
+ */
+.flip-front,
+.flip-back {
+  transition: opacity 420ms var(--ease-art);
+}
+.flip-back {
+  opacity: 0;
+}
+@media (hover: hover) and (pointer: fine) {
+  .group:hover .flip-back {
+    opacity: 1;
+  }
+  .group:hover .flip-front {
+    opacity: 0;
+  }
+}
+.tile-flipped .flip-back {
+  opacity: 1;
+}
+.tile-flipped .flip-front {
+  opacity: 0;
+}
+
+/*
  * Tiles arrive rather than snap in. --i is the tile's index, set inline by
  * ItemCard and CAPPED there, so tile 40 does not wait a second and a half.
  */
 @keyframes tile-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;
@@ -131,7 +165,7 @@ html {
   }
 }
 .tile-in {
-  animation: tile-in 320ms var(--ease-out) both;
+  animation: tile-in 380ms var(--ease-out) both;
   animation-delay: calc(var(--i, 0) * 40ms);
 }
 
@@ -148,17 +182,35 @@ html {
   animation: fade-in 180ms ease-out both;
 }
 
+/* A toast arrives from below rather than popping into place (providers.tsx). */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.toast-in {
+  animation: toast-in 220ms var(--ease-out) both;
+}
+
 /*
  * One switch for everything the overhaul animates. Anything added later that
  * moves belongs in here too.
  */
 @media (prefers-reduced-motion: reduce) {
   .tile-in,
-  .fade-in {
+  .fade-in,
+  .toast-in {
     animation: none;
   }
   .garment-shadow,
-  .garment-lift {
+  .garment-lift,
+  .flip-front,
+  .flip-back {
     transition: none;
   }
   .garment-lift {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { garmentShadowClass, itemLabel } from "./ui";
-import type { Item } from "@/shared/types";
+import { garmentShadowClass, itemLabel, itemThumb, itemThumbBack, orderedPhotos } from "./ui";
+import type { ImageRole, Item, ItemImage } from "@/shared/types";
+
+function image(role: ImageRole, url = `/api/images/x/${role}`): ItemImage {
+  return { id: role, role, url, width: null, height: null };
+}
 
 /** Only the fields itemLabel reads; the rest of Item is irrelevant here. */
 function item(fields: Partial<Item>): Item {
@@ -76,5 +80,72 @@ describe("garmentShadowClass", () => {
     expect(garmentShadowClass("/api/images/a/thumbnail.png")).toBe("garment-shadow");
     expect(garmentShadowClass("/api/images/a/thumbnail.jpg")).toBeUndefined();
     expect(garmentShadowClass(null)).toBeUndefined();
+  });
+});
+
+describe("itemThumb / itemThumbBack", () => {
+  it("prefers the normalized tile over a raw cutout over the raw photo", () => {
+    const it_ = item({
+      images: [image("front"), image("transparent_front"), image("thumbnail")],
+    });
+    expect(itemThumb(it_)).toBe("/api/images/x/thumbnail");
+  });
+
+  it("falls back down the chain when the normalized tile is missing", () => {
+    expect(itemThumb(item({ images: [image("front"), image("transparent_front")] }))).toBe(
+      "/api/images/x/transparent_front",
+    );
+    expect(itemThumb(item({ images: [image("front")] }))).toBe("/api/images/x/front");
+    expect(itemThumb(item({ images: [] }))).toBeNull();
+  });
+
+  // Pre-backfill state for the 15 items that had a generated back before
+  // `thumbnail_back` existed: no thumbnail_back row yet, but transparent_back
+  // does exist, and that must still show up rather than nothing.
+  it("falls back the same way on the back side, independently of the front", () => {
+    const it_ = item({ images: [image("transparent_back"), image("back")] });
+    expect(itemThumbBack(it_)).toBe("/api/images/x/transparent_back");
+  });
+
+  it("is null for a front-only item — nothing to rotate to", () => {
+    expect(itemThumbBack(item({ images: [image("front"), image("thumbnail")] }))).toBeNull();
+  });
+});
+
+describe("orderedPhotos", () => {
+  it("puts both generated sides first, then both originals", () => {
+    const it_ = item({
+      images: [image("front"), image("back"), image("generated_front"), image("generated_back")],
+    });
+    expect(orderedPhotos(it_).map((i) => i.role)).toEqual([
+      "generated_front",
+      "generated_back",
+      "front",
+      "back",
+    ]);
+  });
+
+  // A front-only item, or one where a side never got past segmentation, must
+  // still show something for that slot rather than a gap in the sequence.
+  it("falls back per side to a transparent cutout, then a crop", () => {
+    const it_ = item({
+      images: [image("front"), image("transparent_front"), image("back_cropped"), image("back")],
+    });
+    expect(orderedPhotos(it_).map((i) => i.role)).toEqual([
+      "transparent_front",
+      "back_cropped",
+      "front",
+      "back",
+    ]);
+  });
+
+  it("drops a slot entirely when nothing at all exists for that side", () => {
+    // Imported front-only: no back-anything at all.
+    const it_ = item({ images: [image("generated_front"), image("front")] });
+    expect(orderedPhotos(it_).map((i) => i.role)).toEqual(["generated_front", "front"]);
+  });
+
+  it("is empty for an item with no photos", () => {
+    expect(orderedPhotos(item({ images: [] }))).toEqual([]);
   });
 });
