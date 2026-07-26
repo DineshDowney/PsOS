@@ -3,6 +3,70 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-26 — Uploads go through a client-side queue, and photos shrink to 3000px first
+Front+back is ~11.4 MB and takes 10–15s over Funnel. For all of it the Start button was
+disabled and the file inputs still held the last pick, so the next garment could not be staged.
+Dinesh: *"can the end user (me) not be released?"*
+
+Worth recording because his first instinct was that the import pipeline's stage isolation should
+have contained this. It could not: **the upload completes before `startImport()` is ever
+called**, so no job row exists, no stage runs, and there is nothing for the pipeline to isolate.
+The failure was in the transport in front of it. Same lesson as the 10 MB truncation bug an hour
+earlier — when imports "fail", check whether the pipeline was even reached.
+
+**Queue in the client, not a server-side upload session.** `UploadQueueProvider` mounts inside
+`Providers`, which wraps every screen and does not unmount on client-side navigation, so an
+upload survives moving around the app. **It does not survive a tab close or hard reload** —
+queued items are lost, in-flight ones die. `beforeunload` warns. Durable background upload would
+need a Service Worker with Background Fetch, which is disproportionate for one person uploading
+garments; the honest trade is a warning dialog instead of machinery.
+
+**Strictly one upload at a time**, Dinesh's call and the right one: the server already runs two
+pipelines concurrently with image calls serialized 1-wide, and parallel uploads over a single
+DERP relay just split the same bandwidth while making every progress bar meaningless.
+
+**Sequencing lives in a pure reducer.** A transition into `preparing` is *refused* while
+anything is in flight, so "one at a time" is an invariant tests assert rather than a side effect
+of the worker's guard ref. There is also a `wake()` tick: without it the queue advances only
+because the terminal dispatch happens to re-render after the ref clears — true today, and it
+would stall silently the moment anyone added an `await` near the end of the worker.
+
+**Downscale to 3000px / q0.85** cuts a pair to ~2.4 MB. Chosen over 2000px because the pipeline
+crops the garment box out of the upload and sends the **crop** to Gemini, so upload resolution
+sets crop resolution: at 3000px a garment filling half the frame still yields a ~1500px crop,
+which is where Gemini's vision path wants to be; at 2000px that crop lands near 1000px and
+[Likely] softens logos, stitching and weave. **This is [Likely], not measured** — if a product
+shot ever looks softer than the current batch, this is the first suspect.
+
+Two traps in the downscale worth keeping: `imageOrientation: "from-image"` is **load-bearing**,
+because re-encoding to JPEG discards the EXIF rotation tag that used to fix a sideways photo —
+without the flag the garment is permanently on its side. And it **fails soft in every
+direction** (undecodable HEIC, no canvas, a result that came out bigger → return the original),
+because shrinking is an optimisation and must never be why an import fails.
+
+**Accepted cost:** the archived `front`/`back` originals are no longer the bytes off the phone.
+Acceptable only because Dinesh's true originals live on the device and in
+`Downloads\Photos-1-001` — it is a one-way change to stored data.
+
+`apiUpload` moved to **XMLHttpRequest**: [Certain] `fetch` cannot report upload progress in
+browsers. The error shaping was factored out so both transports share it, including the
+401 → `/login` redirect, which is exactly what gets quietly lost when a second transport appears.
+
+## 2026-07-26 — Wardrobe data off the laptop; one copy now lives on the VM
+Dinesh: *"i don't want the data on the laptop."* Deleted local `data/` (119 MB), `models/`
+(214 MB BiRefNet weights), `.next/`, and ~1.2 GB of accumulated backups — ~1.75 GB.
+
+`data/` was a stale 25 Jul snapshot showing the pre-fix wardrobe, so keeping it was worse than
+not having it: any local UI work would have been judged against broken tiles. The app recreates
+an empty DB at boot, and deleting `models/` only costs the segmentation rung locally (the VM
+keeps its own copy, so deployed imports are unaffected).
+
+**Flagged, and consciously accepted for now:** this leaves **exactly one copy of the wardrobe**,
+on the VM's disk. The existing backup story (Settings → Export) downloads a zip *to the laptop*,
+which is the thing being avoided. The right target is a **GCS bucket** with `gsutil rsync` from
+the VM — off-machine, pennies a month for ~160 MB, laptop never touches it. Not built yet; it is
+the top open risk in STATUS.md.
+
 ## 2026-07-26 — Cutout QA gets a tighter ceiling when we control the framing
 `cutoutQa` is the cutout ladder's only judge, at every rung. It was blind to the most common
 damage mode: pale garments bitten by the flood fill all **passed**, and so did the yellow cap,

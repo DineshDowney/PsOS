@@ -26,6 +26,9 @@ hits the VM directly.
 | **Upload → catalog, end to end** | **Proven live 2026-07-25** on the VM over HTTP through the password gate: all 7 stages green in ~40 s, all 9 image roles written, Gemini metadata correct |
 | **Wardrobe regenerated** | Every item, front and back, as a generated transparent cutout. First pass 24/24; re-run after the prompt + halo fixes |
 | Import pipeline | 7 single-purpose stages over one context object (`imports/pipeline.ts`); colours + metadata read the CLEAN generated image, not the raw photo |
+| Upload | **Non-blocking.** Client queue (`components/upload-queue.tsx`) in `Providers`, one garment at a time, XHR progress. Photos shrink to 3000px/q0.85 before upload (~11.4 MB pair → ~2.4 MB). Survives navigation, **not** a tab close |
+| Upload size ceiling | **64 MB**, one shared constant in `server/lib/upload-limits.ts` feeding both `next.config.ts` and the route guard. Next's 10 MB default *truncated* bodies instead of rejecting them |
+| Laptop data | **None.** `data/`, `models/` and all local backups deleted 2026-07-26 at Dinesh's request. The VM disk is the only copy — see the GCS backup risk below |
 | Prompts | Rewritten. Image = PRESENTATION (one pose/light/framing for every garment) vs IDENTITY (untouchable). Metadata = naming convention + category disambiguation + specific colour names |
 | Cutout quality | Sheared-mask bug fixed (finding 8); bright halo on the dark grid fixed (finding 10) |
 | Gemini rate limits | Same-model backoff 20/45/90s honouring `Retry-After`, plus 5s batch pacing and `--missing` to retry a partial run |
@@ -201,6 +204,18 @@ Verified against the real API / real images, in order:
 
 ## Import pipeline as built
 
+**Read this before debugging a "failed import".** Twice on 2026-07-26 an import failure had
+nothing to do with the pipeline, because the whole request path is:
+
+```
+browser → client upload queue → middleware (auth) → route: parse multipart → startImport() → job row → 7 stages
+```
+
+Everything left of `startImport()` runs **before a job row exists**, so there is no stage to
+fail, nothing to poll, and stage isolation has nothing to isolate. The 10 MB body truncation and
+the blocked-UI complaint both lived there. First question is always: *did a job row get created?*
+If not, the pipeline was never reached.
+
 Seven single-purpose stages over one context object (`imports/pipeline.ts`):
 
 `save → garment_box → image_generation → background_removal → colors → ai_metadata → thumbnail`
@@ -265,6 +280,10 @@ See `deploy/vm/README.md` for the units, the install steps and the Tailscale got
 
 Highest value first:
 
+0. **Off-machine backup (GCS bucket).** Highest *risk* item, not the highest value: deleting the
+   laptop copies on 2026-07-26 left **one copy of the wardrobe, on the VM's disk**. `gsutil rsync`
+   from the VM to a bucket, ~160 MB, pennies a month, laptop never touches it. Settings → Export
+   does not cover this — it downloads to the laptop, which is what Dinesh does not want.
 1. **UI redesign (Phase C).** Next up — Dinesh, 2026-07-26, immediately after the cutout fix.
    Measured complaint: 12 motion-related utilities across 1,958 lines of TSX, no animation
    library — but the real cause is structural, not decorative: every screen is `"use client"` +
