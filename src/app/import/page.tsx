@@ -2,11 +2,12 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiUpload, apiSend } from "@/lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiSend } from "@/lib/api";
 import type { ImportJob, ImportStage } from "@/shared/types";
 import { Button, Empty, PageTitle, SectionLabel, garmentGlowClass, itemThumb } from "@/components/ui";
 import { useToast } from "@/components/providers";
+import { useUploadQueue, type UploadItem } from "@/components/upload-queue";
 
 const STAGE_LABELS: Record<ImportStage, string> = {
   save: "Save photos",
@@ -41,6 +42,58 @@ function StageRow({ job }: { job: ImportJob }) {
   );
 }
 
+const UPLOAD_LABELS: Record<UploadItem["status"], string> = {
+  waiting: "Queued",
+  preparing: "Shrinking photo",
+  uploading: "Uploading",
+  done: "Sent",
+  failed: "Failed",
+};
+
+/**
+ * One queued garment. This covers the gap the job list cannot: until the bytes
+ * land there is no job row on the server to poll, so without this the user has
+ * no evidence their photos are going anywhere.
+ */
+function UploadRow({
+  item,
+  onRetry,
+  onDismiss,
+}: {
+  item: UploadItem;
+  onRetry: (id: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  const percent = Math.round(item.progress * 100);
+  const color =
+    item.status === "failed" ? "text-danger" : item.status === "done" ? "text-ok" : "text-accent";
+
+  return (
+    <div className="flex flex-col gap-2 py-4 sm:flex-row sm:items-center sm:gap-5">
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 truncate text-sm">{item.label}</div>
+        <div className={`text-[10px] uppercase tracking-[0.08em] ${color}`}>
+          {UPLOAD_LABELS[item.status]}
+          {item.status === "uploading" ? ` ${percent}%` : ""}
+          {item.back ? " · front + back" : " · front only"}
+        </div>
+        {item.status === "uploading" ? (
+          <div className="mt-2 h-px w-full bg-line">
+            <div className="h-px bg-accent transition-[width]" style={{ width: `${percent}%` }} />
+          </div>
+        ) : null}
+        {item.error ? <div className="mt-1 text-xs text-danger">{item.error}</div> : null}
+      </div>
+      {item.status === "failed" ? (
+        <div className="flex shrink-0 gap-2">
+          <Button onClick={() => onRetry(item.id)}>Retry</Button>
+          <Button onClick={() => onDismiss(item.id)}>Discard</Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ImportPage() {
   const toast = useToast();
   const qc = useQueryClient();
@@ -58,29 +111,25 @@ export default function ImportPage() {
         : 10000,
   });
 
-  const upload = useMutation({
-    mutationFn: (form: FormData) => apiUpload<{ job: ImportJob }>("/api/imports", form),
-    onSuccess: () => {
-      toast("info", "Import started");
-      setFrontName("");
-      setBackName("");
-      if (frontRef.current) frontRef.current.value = "";
-      if (backRef.current) backRef.current.value = "";
-      qc.invalidateQueries({ queryKey: ["imports"] });
-    },
-  });
+  const queue = useUploadQueue();
 
+  /**
+   * Hand the photos to the queue and clear the form in the same tick, so the
+   * next garment can be staged while these bytes are still going up. The upload
+   * used to be awaited here, which held the user for 10-15s over Funnel.
+   */
   const start = () => {
     const front = frontRef.current?.files?.[0];
     if (!front) {
       toast("error", "Pick a front photo first");
       return;
     }
-    const form = new FormData();
-    form.set("front", front);
-    const back = backRef.current?.files?.[0];
-    if (back) form.set("back", back);
-    upload.mutate(form);
+    queue.enqueue({ front, back: backRef.current?.files?.[0] ?? null });
+
+    setFrontName("");
+    setBackName("");
+    if (frontRef.current) frontRef.current.value = "";
+    if (backRef.current) backRef.current.value = "";
   };
 
   const jobs = data?.jobs ?? [];
@@ -116,11 +165,23 @@ export default function ImportPage() {
           ))}
         </div>
         <div>
-          <Button variant="solid" onClick={start} disabled={upload.isPending}>
-            {upload.isPending ? "Uploading…" : "Start import"}
+          {/* Never disabled by upload state — that was the whole complaint. */}
+          <Button variant="solid" onClick={start} disabled={!frontName}>
+            Start import
           </Button>
         </div>
       </div>
+
+      {queue.items.length > 0 ? (
+        <>
+          <SectionLabel className="mb-4">Uploading</SectionLabel>
+          <div className="mb-12 divide-y divide-line">
+            {queue.items.map((item) => (
+              <UploadRow key={item.id} item={item} onRetry={queue.retry} onDismiss={queue.dismiss} />
+            ))}
+          </div>
+        </>
+      ) : null}
 
       <SectionLabel className="mb-4">In progress & awaiting review</SectionLabel>
       {jobs.length === 0 ? (

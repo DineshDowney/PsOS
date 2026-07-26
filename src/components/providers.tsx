@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { useKeepalive } from "@/components/keepalive";
+import { UploadQueueProvider } from "@/components/upload-queue";
 
 // ---------------------------------------------------------------------------
 // Toasts — small, self-contained; every mutation error lands here.
@@ -47,10 +48,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
     [push],
   );
 
+  const reportUploadError = useCallback((message: string) => push("error", message), [push]);
+
   return (
     <QueryClientProvider client={queryClient}>
       <ToastContext.Provider value={push}>
-        {children}
+        <UploadQueueProvider onError={reportUploadError}>{children}</UploadQueueProvider>
         <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2">
           {toasts.map((t) => (
             <div
