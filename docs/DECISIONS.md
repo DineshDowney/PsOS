@@ -3,6 +3,79 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-26 — On-demand image regeneration, grounded in metadata and feedback
+Dinesh, called top priority: regenerate an item's studio shots from the item page — pick
+front/back/both, say what was wrong last time, and have the regen pick up whatever metadata
+edits have been made since.
+
+**Async and job-backed, not a blocking request.** A two-sided regen is 1-2 *sequential* Gemini
+calls (the image limiter in `ai/image-generation.ts` is 1-wide process-wide), 15-40s. Holding a
+request open that long across the Tailscale Funnel relay is an unverified proxy-timeout risk —
+Dinesh chose explicitly to pay for a `regen_jobs` table and a 2s poller rather than find out the
+hard way. Routes and job shape mirror the existing import-job pattern rather than inventing a
+second one.
+
+**First real migration of this phase.** The previous two features were TypeScript-only enum
+additions (`role` is plain `TEXT` with no SQL `CHECK`), so this is the first that actually
+generates SQL. Backed up the live DB before deploying and verified 23 items / 279 images intact
+after. Worth recording: `getDb()` is lazy, so migrations do **not** run on `systemctl restart` —
+they run when the first request touches the DB. A check immediately after restart reports the
+new table MISSING and looks like a failed migration when nothing is wrong.
+
+**Per-side results persist as each side finishes**, so a "both" job shows the front landing
+while the back is still generating rather than nothing for 40s.
+
+### Prompt grounding
+`buildPrompt(context?)` appends two optional sections to the base prompt: KNOWN FACTS from the
+item's current metadata, and a REQUIRED FIX section carrying Dinesh's words verbatim, last so it
+reads as the override.
+
+**Facts deliberately exclude brand.** Naming a brand risks the model drawing a generic version
+of that brand's logo instead of copying the pixels in the source photo — which fights the
+prompt's own IDENTITY rule ("reproduce it as it appears"). Offered as a choice; Dinesh took the
+no-brand option.
+
+**Metadata is read at RUN time, not queue time.** If he edits the colour while a job waits its
+turn behind another, the edit still grounds the generation.
+
+**`buildPrompt()` with no context returns the base prompt byte-for-byte, with a test asserting
+it.** This is the entire safety argument for making the prompt context-aware: the import
+pipeline's first generation passes nothing, and without that guarantee every future import
+silently changes behaviour.
+
+**Regeneration always sources from the ORIGINAL crop or photo, never from a previous
+generation.** Regenerating a regeneration compounds drift away from the real garment on every
+retry; the crop is the one fixed anchor to fidelity.
+
+### Two gaps caught by re-deriving the plan mid-build
+Dinesh interrupted with "stop and rethink the plan to optimize it" after the backend was
+written. Both of these would otherwise have shipped:
+
+**Regen jobs had no concurrency limit**, unlike imports (`createLimiter(2)`). Three clicks would
+have queued three jobs all blocked inside the process-wide image limiter while reporting
+"running" to the UI. Now 1-wide *at the job level*, so a job that has not started yet honestly
+reads "queued".
+
+**Nothing held the VM awake during a regen.** `workStarted`/`workFinished` existed only as
+private functions inside `imports/pipeline.ts`, so a regen queued behind other work could have
+had the machine power off underneath it. Extracted to `lib/work-hold.ts` and shared. It has to
+be **one** counter, not a copy per caller: two independent counters would each run their own
+ticker against the same flag file, and "is anything still running?" would be split across
+modules that cannot see each other.
+
+The same interruption cut two things out of this commit — the slow-image-load fix (diagnosed but
+never *measured*, so measuring comes first) and refactoring `scripts/regenerate-images.ts` onto
+the new shared `regenerateSide`. That script has a real latent bug — it only refreshes the FRONT
+tile even when regenerating the back, the same bug already fixed twice in sibling scripts — but
+it is scope nobody asked for and cannot be exercised without spending money. Both are backlog.
+
+### Photo navigation
+Prev/next arrows, swipe, and clickable dots on the item page viewer — four ways to drive one
+index. **Any manual navigation stops the auto-cycle permanently**: a carousel that yanks itself
+forward a second after you deliberately chose a photo is the most irritating thing it could do.
+Arrows are always visible on touch and fade in on hover for pointer devices, because a
+hover-revealed control is invisible on a phone.
+
 ## 2026-07-26 — Rotate front/back tiles instead of regenerating anything
 Dinesh: *"I want both the front and back to be re-generated. So that we can rotate through the
 two images."* Checked the DB before spending anything: `generated_back` already existed for 15

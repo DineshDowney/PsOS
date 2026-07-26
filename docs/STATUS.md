@@ -7,9 +7,10 @@ Last updated: 2026-07-26.
 
 **Phase C, 2026-07-26.** The app is light mode: white page, garments on paper grounds at 240px
 square tiles filling ~88%, names off the front end, and the wardrobe server-rendered so the
-landing screen no longer opens on a spinner. 15 of 23 items now rotate front/back on the grid
-tile and on the item page. Awaiting Dinesh's browser judgement on the look. Next up is the
-off-machine backup (highest risk) and the bulk front-only photo upload.
+landing screen no longer opens on a spinner. 15 of 23 items rotate front/back on the grid tile
+and on the item page. **Images can now be regenerated on demand from the item page**, grounded
+in the item's current metadata plus free-text feedback. Awaiting Dinesh's browser judgement on
+the regen flow. Next up is the off-machine backup (highest risk) and the deferred items below.
 
 ## The URL
 
@@ -50,6 +51,8 @@ hits the VM directly.
 | **Tiles** | 240px **square** (reverted from portrait `.78` — that was clipping the pipeline's own 88% garment occupancy down to ~57% of tile height). Full-bleed, no padding |
 | **Front/back rotation** | New `thumbnail_back` image role, same 640px/88%-occupancy tile as the front. **15 of 23 items** have a back (8 were imported front-only, no source to generate one from). Grid tile crossfades on hover (desktop) or a staggered slow timer (touch, `hover:none`). Item page shows generated front → generated back → original front → original back, each falling back independently if that side was never regenerated |
 | **Motion** | CSS only, **0 KB added**. Tile entrance stagger (capped at 12, now 12px/380ms — bumped, the first pass was too subtle to register), hover garment lift, front/back crossfade, filter cross-dissolve, cross-page fade, button/segmented press-scale (fires on tap, not just click), toast slide-in. One `prefers-reduced-motion` block disables all of it |
+| **Image regeneration** | **On demand from the item page** (`server/imaging/regenerate.ts`). Front/back/both + optional feedback; prompt grounded in current metadata (no brand, deliberately). Async job + 2s poll — a two-sided regen is 15-40s of sequential Gemini calls. 1-wide at the job level; holds the VM awake via the shared `lib/work-hold.ts`. **~$0.04/side, shown on the button** |
+| **Photo navigation** | Item page viewer has prev/next arrows, swipe, and clickable dots. Any manual navigation stops the auto-cycle permanently |
 | **First paint** | `/wardrobe` **server-renders** (`listItems` is sync, so no HTTP hop) and is `force-dynamic`. The other 8 screens still fetch after hydration — they still open on a spinner |
 | App icon | Done (`src/app/icon.svg`) |
 
@@ -298,24 +301,33 @@ Highest value first:
    Briefs, Grey Pinstriped Sweat Shorts, Kiprun Grey Sports T-Shirt, Maroon Jockey Boxer Briefs.
    Imported front-only originally; nothing to generate a back from without a photo. Photography,
    not engineering.
-1. **Server-render the remaining 8 screens.** Phase C did `/wardrobe` only, by Dinesh's scoping,
+1. **Slow image loads** (Dinesh, 2026-07-26 — parked by him pending measurement). I diagnosed
+   the always-mounted back `<img>` in `ItemCard` double-fetching on the wardrobe grid, but never
+   measured it; the other candidate is simply that 23 transparent PNGs is a lot of bytes vs
+   JPEG. **Measure the actual payload and waterfall before writing any fix** — two "silent
+   failures" this session turned out to be my own grep escaping, and the same discipline applies.
+2. **Refactor `scripts/regenerate-images.ts` onto `regenerateSide`** (`server/imaging/regenerate.ts`).
+   It carries a real latent bug — it only refreshes the FRONT tile even when regenerating the
+   back, the same bug already fixed in `rekey-images.ts` and the pipeline. Deferred because it is
+   scope nobody asked for and cannot be exercised without spending money.
+3. **Server-render the remaining 8 screens.** Phase C did `/wardrobe` only, by Dinesh's scoping,
    and it is the pattern to copy: `page.tsx` server shell reading the service directly + a client
    island, `force-dynamic`, `initialData` seeding. Until this lands, every screen except the
    landing one opens on a spinner — and the cross-page fade is fading *into* those spinners.
-2. **Housekeeping from the contact sheet** (finding 16): un-archive one Indigo Block-Print
+4. **Housekeeping from the contact sheet** (finding 16): un-archive one Indigo Block-Print
    Kurta, name + categorise the two unnamed items, resolve or discard the stuck draft, and move
    `Maroon Jockey Boxer Briefs` off `accessory`.
-3. **Catalog the rest of the wardrobe, front-only.** The pipeline is ready and one-shot per
+5. **Catalog the rest of the wardrobe, front-only.** The pipeline is ready and one-shot per
    garment; this is photo-taking work now, not engineering work. Front-only halves the image
    calls and the quota stalling (finding 18).
-4. **Bulk import UI** — `<input multiple>` → one photo = one garment → N POSTs. Backend needs no
+6. **Bulk import UI** — `<input multiple>` → one photo = one garment → N POSTs. Backend needs no
    changes. Cut from Phase B by Dinesh; still worth having before a 40-garment batch.
-5. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
+7. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
    `instances.start`, so hitting a URL from the phone boots the VM.
-6. Retry for partially-failed import jobs (a stage failed but the job reached
+8. Retry for partially-failed import jobs (a stage failed but the job reached
    `ready_for_review` — currently only wholly-failed jobs can retry).
-7. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
-8. **Chroma-key backdrop**, if a genuinely off-white garment ever fails (finding 17). Not needed
+9. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
+10. **Chroma-key backdrop**, if a genuinely off-white garment ever fails (finding 17). Not needed
    for the current wardrobe; only pay the prompt change + regeneration when something actually
    breaks.
 
