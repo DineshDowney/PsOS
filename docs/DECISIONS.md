@@ -3,6 +3,69 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-26 — Rotate front/back tiles instead of regenerating anything
+Dinesh: *"I want both the front and back to be re-generated. So that we can rotate through the
+two images."* Checked the DB before spending anything: `generated_back` already existed for 15
+of the 23 items — that work was already paid for and just wasn't being shown. The other 8 were
+imported front-only, so there is no photo to generate a back from; those need Dinesh with a
+camera, not a Gemini call. **This entire change cost $0.**
+
+**New `thumbnail_back` image role**, the same 640px/88%-occupancy tile treatment the front side
+already got. Necessary, not cosmetic: rotating the raw `transparent_back` against the normalized
+front thumbnail would jump the garment's size and position on every flip, because the two would
+be at different scales. Both sides need identical normalization for a flip to read as one
+garment turning around rather than two unrelated photos swapping.
+
+`role` is a plain `TEXT` column with no SQL `CHECK` constraint (confirmed against the drizzle
+migration files before adding this) — the new value is a TypeScript-only change, no migration.
+The pipeline writes it going forward (`bestBack()` mirrors the existing `bestFront()` in
+`imports/pipeline.ts`); `scripts/rekey-images.ts` backfills it for existing items by re-deriving
+the tile from the `generated_back` already on disk. That script previously computed a back-side
+cutout but only ever refreshed the **front** tile, even when called with `--side back` — a
+latent bug that had no visible effect until there was a `thumbnail_back` role to refresh.
+
+**Caught and fixed post-deploy, not before:** the backfill's first run inserted all 15
+`thumbnail_back` rows with `width`/`height` both `null`. `setThumbnail`'s insert path had
+delegated to `upsertImage`, which is correct for `transparent_front`/`_back` (a null size *is*
+right there — it's the un-normalized cutout) but wrong for a tile role, which always has a known
+size. The bug was invisible on the front side because that row always already existed by the
+time rekey runs (`stageSave` creates it), so only the update branch ever fired. Checked the DB
+directly after the first deploy rather than trusting the script's own "0 needing attention"
+summary — that summary only covers cutout quality, not row correctness. Fixed and re-ran the
+(idempotent, $0) backfill; verified all 15 at `640x640` before calling it done.
+
+### The garment was rendering small — a regression from an hour earlier, not the pipeline
+`makeThumbnail` already trims to the garment's alpha bounding box and recenters it at 88%
+occupancy — that part was correct and untouched. What shrank it was the light-mode pass
+immediately prior: a square 640px tile was placed inside a **portrait** `aspect-[0.78]` box with
+padding, so `object-contain` fit to width and the garment landed at roughly 60% of the tile's
+*height*. Reverted to a square tile, no padding — the 88% the pipeline already produces is now
+what actually shows. The portrait ratio was the right idea borrowed from the wrong source
+(a reference whose thumbnails are natively portrait); ours are square, so the frame has to be too.
+
+Also fixed in the same pass: `makeThumbnail`'s opaque-fallback path was still flattening onto
+`#111110`, the old dark theme's surface colour — any item whose cutout failed was rendering a
+near-black square on the new white page. Flattens onto the paper tone now.
+
+### Item page: regenerated shots first, originals last
+Dinesh: *"the first two photos should be regen ones, then the og."* `orderedPhotos()` in
+`components/ui.tsx` is the one definition: generated front, generated back, original front,
+original back — each of the first two falling back independently to a transparent cutout or the
+tight crop when that side was never (re)generated, rather than the slot disappearing. Frame
+bumped 280–420px to 300–480px, matching "bigger" applied to the grid tiles too.
+
+### More motion, and what was deliberately left out
+*"There's still very little to no animations."* Diagnosis: the light-mode pass's motion was
+mostly `:hover`-driven (garment lift, shadow deepening) — invisible on a phone, which is likely
+why it read as static. Added: button and segmented-control press-scale (`:active`, which fires
+on tap as well as click), a toast slide-in, and increased the tile entrance stagger's distance
+and duration since the original values were apparently too subtle to notice.
+
+**Declined for this pass, on purpose:** a sliding-pill background for `SegmentedControl` and a
+sliding underline for the nav's active item. Both need measured layout
+(`getBoundingClientRect`) to handle variable-width labels correctly — real scope, not a
+one-line addition, and not worth rushing alongside everything else here.
+
 ## 2026-07-26 — Light mode: white page, paper tiles, and no garment names on screen
 Dinesh: *"I think i wanna go light mode. White background. Make the items more bigger. Remove
 the names. we don;t need names on front end. Just labels."* Plus motion, *"aesthetically clean

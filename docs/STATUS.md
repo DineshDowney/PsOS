@@ -6,9 +6,10 @@ Last updated: 2026-07-26.
 ## Current objective
 
 **Phase C, 2026-07-26.** The app is light mode: white page, garments on paper grounds at 240px
-portrait, names off the front end, CSS-only motion, and the wardrobe server-rendered so the
-landing screen no longer opens on a spinner. Awaiting Dinesh's browser judgement on the look.
-Next up is the off-machine backup (highest risk) and the bulk front-only photo upload.
+square tiles filling ~88%, names off the front end, and the wardrobe server-rendered so the
+landing screen no longer opens on a spinner. 15 of 23 items now rotate front/back on the grid
+tile and on the item page. Awaiting Dinesh's browser judgement on the look. Next up is the
+off-machine backup (highest risk) and the bulk front-only photo upload.
 
 ## The URL
 
@@ -46,8 +47,9 @@ hits the VM directly.
 | **Theme** | **Light.** White page `#fdfdfc`, paper garment grounds `#f4f1ea`, burgundy accent `#6e302e`, ink `#191817`. All 9 screens via semantic tokens in `globals.css` |
 | **Garment separation** | `.garment-shadow` — warm drop-shadow under transparent cutouts, deepening on hover. Replaces `.garment-glow`, which existed for the same reason on near-black |
 | **Item labels** | Names hidden on **every** screen; `itemLabel()` in `components/ui.tsx` is the one definition (colour · subcategory). Column, editor field, AI inference and search all unchanged |
-| **Tiles** | 240px, portrait `aspect-ratio: .78`. Thumbnails were already 640px square, so no pipeline work |
-| **Motion** | CSS only, **0 KB added**. Tile entrance stagger (capped at 12), hover garment lift, filter cross-dissolve, cross-page fade. One `prefers-reduced-motion` block disables all of it |
+| **Tiles** | 240px **square** (reverted from portrait `.78` — that was clipping the pipeline's own 88% garment occupancy down to ~57% of tile height). Full-bleed, no padding |
+| **Front/back rotation** | New `thumbnail_back` image role, same 640px/88%-occupancy tile as the front. **15 of 23 items** have a back (8 were imported front-only, no source to generate one from). Grid tile crossfades on hover (desktop) or a staggered slow timer (touch, `hover:none`). Item page shows generated front → generated back → original front → original back, each falling back independently if that side was never regenerated |
+| **Motion** | CSS only, **0 KB added**. Tile entrance stagger (capped at 12, now 12px/380ms — bumped, the first pass was too subtle to register), hover garment lift, front/back crossfade, filter cross-dissolve, cross-page fade, button/segmented press-scale (fires on tap, not just click), toast slide-in. One `prefers-reduced-motion` block disables all of it |
 | **First paint** | `/wardrobe` **server-renders** (`listItems` is sync, so no HTTP hop) and is `force-dynamic`. The other 8 screens still fetch after hydration — they still open on a spinner |
 | App icon | Done (`src/app/icon.svg`) |
 
@@ -291,6 +293,11 @@ Highest value first:
    laptop copies on 2026-07-26 left **one copy of the wardrobe, on the VM's disk**. `gsutil rsync`
    from the VM to a bucket, ~160 MB, pennies a month, laptop never touches it. Settings → Export
    does not cover this — it downloads to the laptop, which is what Dinesh does not want.
+0.5. **Photograph the backs of 8 items** so they can rotate like the other 15: `593c47ae`,
+   `8d05cc43`, Coral Heather Athletic T-Shirt, Grey Jockey Boxer Trunks, Grey Levi's Boxer
+   Briefs, Grey Pinstriped Sweat Shorts, Kiprun Grey Sports T-Shirt, Maroon Jockey Boxer Briefs.
+   Imported front-only originally; nothing to generate a back from without a photo. Photography,
+   not engineering.
 1. **Server-render the remaining 8 screens.** Phase C did `/wardrobe` only, by Dinesh's scoping,
    and it is the pattern to copy: `page.tsx` server shell reading the service directly + a client
    island, `force-dynamic`, `initialData` seeding. Until this lands, every screen except the
