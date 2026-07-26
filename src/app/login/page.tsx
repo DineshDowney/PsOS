@@ -49,7 +49,7 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={busy || !password}
-          className="bg-fg px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] text-bg transition-colors hover:bg-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          className="bg-fg px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] text-bg transition-colors hover:bg-accent hover:text-accent-fg disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Checking…" : "Enter"}
         </button>

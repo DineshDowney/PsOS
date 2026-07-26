@@ -9,6 +9,11 @@ const nextConfig: NextConfig = {
     // front+back upload (2026-07-26: two ~5.8 MB photos beat the 10 MB default).
     // Keep in step with the route's own guard via the shared constant.
     middlewareClientMaxBodySize: MAX_UPLOAD_BYTES,
+    // Wraps client-side navigations in document.startViewTransition, which is
+    // what makes the cross-page fade in globals.css apply. Experimental, and
+    // purely cosmetic — if it ever misbehaves, delete this line and the
+    // @view-transition block and nothing else breaks.
+    viewTransition: true,
   },
   // Dev-tools badge top-right. Note: if hidden via its own menu, Next.js
   // provides no API to re-show it — restarting `npm run dev` restores it.

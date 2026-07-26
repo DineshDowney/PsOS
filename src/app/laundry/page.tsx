@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "@/lib/api";
 import type { Item, ItemStatus } from "@/shared/types";
-import { Button, Empty, PageTitle, itemThumb } from "@/components/ui";
+import { Button, Empty, PageTitle, itemLabel, itemThumb } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
 const COLUMNS: Array<{ status: ItemStatus; title: string; hint: string }> = [
@@ -75,14 +75,23 @@ export default function LaundryPage() {
                   {colItems.map((item) => {
                     const thumb = itemThumb(item);
                     return (
-                      <div key={item.id} className="flex items-center gap-3 border border-line/60 p-2">
-                        <div className="h-12 w-12 shrink-0 bg-bg">
+                      // Full-strength hairline: at 60% the warm line is invisible
+                      // against paper.
+                      <div key={item.id} className="flex items-center gap-3 border border-line p-2">
+                        {/* surface-2, not white: a pale garment in a 48px white
+                            well has no edge at all. */}
+                        <div className="h-12 w-12 shrink-0 bg-surface-2">
                           {thumb ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={thumb} alt="" className="h-full w-full object-contain" />
                           ) : null}
                         </div>
-                        <span className="min-w-0 flex-1 truncate text-sm">{item.name}</span>
+                        <span
+                          className="min-w-0 flex-1 truncate text-sm text-muted"
+                          title={item.name || undefined}
+                        >
+                          {itemLabel(item)}
+                        </span>
                         <div className="flex shrink-0 gap-1">
                           {COLUMNS.filter((c) => c.status !== col.status).map((c) => (
                             <button

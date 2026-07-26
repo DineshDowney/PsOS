@@ -96,7 +96,7 @@ export function Button({
       className={clsx(
         "px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
         variant === "outline" && "border border-line text-fg hover:border-muted",
-        variant === "solid" && "bg-fg text-bg hover:bg-accent hover:text-fg",
+        variant === "solid" && "bg-fg text-bg hover:bg-accent hover:text-accent-fg",
         variant === "ghost" && "text-muted hover:text-fg",
         variant === "danger" && "border border-danger/60 text-danger hover:border-danger",
         className,
@@ -150,25 +150,64 @@ export function itemThumb(item: Item): string | null {
   return byRole("thumbnail") ?? byRole("transparent_front") ?? byRole("front") ?? null;
 }
 
-/** Transparent cutouts get the silhouette glow; flattened JPEG fallbacks don't. */
-export function garmentGlowClass(url: string | null): string | undefined {
-  return url && url.includes(".png") ? "garment-glow" : undefined;
+/**
+ * What a garment is called on screen. The single definition — no screen builds
+ * its own.
+ *
+ * Names are deliberately not shown anywhere in the UI (Dinesh, 2026-07-26): they
+ * are AI-written and he does not want them. The column, the editor field and the
+ * AI inference all stay, and search still matches name, so nothing is lost —
+ * it just isn't the thing you read.
+ *
+ * Falls through to the name and then "Untitled" so a bare draft, which has no
+ * colour or category yet, never renders as an empty row.
+ */
+export function itemLabel(item: Item): string {
+  const label = [item.primaryColor, item.subcategory ?? item.category].filter(Boolean).join(" · ");
+  return label || item.name || "Untitled";
 }
 
-export function ItemCard({ item, footer }: { item: Item; footer?: React.ReactNode }) {
+/** Transparent cutouts get the silhouette shadow; flattened JPEG fallbacks don't. */
+export function garmentShadowClass(url: string | null): string | undefined {
+  return url && url.includes(".png") ? "garment-shadow" : undefined;
+}
+
+/** Past this many tiles the entrance stagger stops, so late tiles don't wait. */
+const STAGGER_CAP = 12;
+
+export function ItemCard({
+  item,
+  footer,
+  index = 0,
+}: {
+  item: Item;
+  footer?: React.ReactNode;
+  /** Position in the grid — drives the entrance stagger only. */
+  index?: number;
+}) {
   const thumb = itemThumb(item);
+  const label = itemLabel(item);
   return (
-    <div className="group flex flex-col">
+    <div
+      className="tile-in group flex flex-col"
+      style={{ "--i": Math.min(index, STAGGER_CAP) } as React.CSSProperties}
+    >
       <Link
         href={`/items/${item.id}`}
-        className="relative block aspect-square overflow-hidden transition-opacity group-hover:opacity-80"
+        // Paper ground: the thumbnails are transparent cutouts, so a pale garment
+        // needs something other than the white page behind it.
+        className="relative block aspect-[0.78] overflow-hidden bg-surface"
+        title={item.name || undefined}
       >
         {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={thumb}
-            alt={item.name}
-            className={clsx("h-full w-full object-contain p-3", garmentGlowClass(thumb))}
+            alt={label}
+            className={clsx(
+              "garment-lift h-full w-full object-contain p-5",
+              garmentShadowClass(thumb),
+            )}
             loading="lazy"
           />
         ) : (
@@ -182,14 +221,7 @@ export function ItemCard({ item, footer }: { item: Item; footer?: React.ReactNod
           </div>
         ) : null}
       </Link>
-      <div className="mt-2 flex items-start justify-between gap-2">
-        <div>
-          <div className="text-sm">{item.name || "Untitled"}</div>
-          <div className="text-[10px] uppercase tracking-[0.08em] text-muted">
-            {[item.primaryColor, item.subcategory ?? item.category].filter(Boolean).join(" · ")}
-          </div>
-        </div>
-      </div>
+      <div className="mt-3 text-[11px] uppercase tracking-[0.08em] text-muted">{label}</div>
       {footer}
     </div>
   );

@@ -2,6 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
+import clsx from "clsx";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "@/lib/api";
@@ -17,6 +18,8 @@ import {
   Spinner,
   StatusBadge,
   inputClass,
+  garmentShadowClass,
+  itemLabel,
 } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
@@ -35,7 +38,7 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
   if (images.length === 0) return null;
   return (
     <div
-      className="relative aspect-square w-full cursor-pointer"
+      className="relative aspect-square w-full cursor-pointer bg-surface"
       onClick={() => setIndex((i) => (i + 1) % images.length)}
       title={images.length > 1 ? "click to flip" : undefined}
     >
@@ -45,9 +48,11 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
           key={img.id}
           src={img.url}
           alt={`${name} ${img.role}`}
-          className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-700 ${
-            i === index ? "opacity-100" : "opacity-0"
-          }`}
+          className={clsx(
+            "absolute inset-0 h-full w-full object-contain transition-opacity duration-700",
+            i === index ? "opacity-100" : "opacity-0",
+            garmentShadowClass(img.url),
+          )}
         />
       ))}
       {images.length > 1 ? (
@@ -177,10 +182,8 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
 
   return (
     <div>
-      <PageTitle
-        eyebrow={item.state === "draft" ? "Draft — review and confirm" : "Item"}
-      >
-        {item.name || "Untitled"}
+      <PageTitle eyebrow={item.state === "draft" ? "Draft — review and confirm" : "Item"}>
+        {itemLabel(item)}
       </PageTitle>
 
       {dupes && (dupes.exact.length > 0 || dupes.similar.length > 0) ? (
@@ -188,13 +191,23 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
           <SectionLabel className="text-danger">possible duplicate</SectionLabel>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-muted">
             {dupes.exact.map((d) => (
-              <Link key={d.id} href={`/items/${d.id}`} className="underline hover:text-fg">
-                {d.name || "Untitled"} — identical photo
+              <Link
+                key={d.id}
+                href={`/items/${d.id}`}
+                title={d.name || undefined}
+                className="underline hover:text-fg"
+              >
+                {itemLabel(d)} — identical photo
               </Link>
             ))}
             {dupes.similar.map((s) => (
-              <Link key={s.item.id} href={`/items/${s.item.id}`} className="underline hover:text-fg">
-                {s.item.name || "Untitled"} — very similar photo
+              <Link
+                key={s.item.id}
+                href={`/items/${s.item.id}`}
+                title={s.item.name || undefined}
+                className="underline hover:text-fg"
+              >
+                {itemLabel(s.item)} — very similar photo
               </Link>
             ))}
           </div>
@@ -205,7 +218,7 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
         <div className="flex flex-col gap-5">
           {/* Cropped garment shots only — raw photos (tripod, floor…) stay on disk, never shown */}
           <RotatingPhotos
-            name={item.name ?? "item"}
+            name={itemLabel(item)}
             images={(["front", "back"] as const)
               .map((side) => {
                 const cropped = item.images.find((i) => i.role === `${side}_cropped`);

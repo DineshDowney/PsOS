@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "@/lib/api";
 import type { ImportJob, ImportStage } from "@/shared/types";
-import { Button, Empty, PageTitle, SectionLabel, garmentGlowClass, itemThumb } from "@/components/ui";
+import {
+  Button, Empty, PageTitle, SectionLabel, garmentShadowClass, itemLabel, itemThumb,
+} from "@/components/ui";
 import { useToast } from "@/components/providers";
 import { useUploadQueue, type UploadItem } from "@/components/upload-queue";
 
@@ -192,18 +194,20 @@ export default function ImportPage() {
             const thumb = job.item ? itemThumb(job.item) : null;
             return (
               <div key={job.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:gap-5">
-                <div className="h-20 w-20 shrink-0">
+                <div className="h-20 w-20 shrink-0 bg-surface">
                   {thumb ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={thumb}
                       alt=""
-                      className={`h-full w-full object-contain ${garmentGlowClass(thumb) ?? ""}`}
+                      className={`h-full w-full object-contain ${garmentShadowClass(thumb) ?? ""}`}
                     />
                   ) : null}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="mb-1 text-sm">{job.item?.name || "Processing…"}</div>
+                  <div className="mb-1 text-sm text-muted">
+                    {job.item ? itemLabel(job.item) : "Processing…"}
+                  </div>
                   <StageRow job={job} />
                   {job.error ? <div className="mt-1 text-xs text-danger">{job.error}</div> : null}
                 </div>

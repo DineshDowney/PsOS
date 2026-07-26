@@ -1,17 +1,59 @@
 @import "tailwindcss";
 
+/*
+ * Light palette, 2026-07-26. Was near-black until then.
+ *
+ * White page, paper tiles. Dinesh asked for a white background; the reference
+ * he pointed at (tandpfun/wardrobe) is warm paper #f4f0e8 throughout. Splitting
+ * the difference deliberately: the page is white, the garment sits on paper.
+ * That matters beyond taste — thumbnails are transparent cutouts, so a cream
+ * garment on a white page has no edge at all. On paper it gets two separations:
+ * the tile against the page, and .garment-shadow underneath.
+ *
+ * Accent is the reference's burgundy rather than the terracotta this used to
+ * carry. Terracotta on cream is over-produced right now; burgundy reads chosen.
+ */
 @theme {
-  --color-bg: #0a0a09;
-  --color-surface: #111110;
-  --color-surface-2: #181816;
-  --color-line: #262624;
-  --color-fg: #e8e6e1;
-  --color-muted: #8a877f;
-  --color-faint: #55534d;
-  --color-accent: #a84b42;
-  --color-danger: #b3564a;
-  --color-ok: #7a8f6d;
+  --color-bg: #fdfdfc;
+  --color-surface: #f4f1ea;
+  --color-surface-2: #ebe7dd;
+  --color-line: #d9d3c6;
+  --color-fg: #191817;
+  --color-muted: #6b675f;
+  --color-faint: #a29d92;
+  --color-accent: #6e302e;
+  /*
+   * Text that sits ON the accent. Load-bearing: three places do
+   * `hover:bg-accent hover:text-accent-fg` (solid Button, login submit, the
+   * wardrobe + button). Those read `text-fg` before light mode, which on
+   * burgundy is near-black on dark red — unreadable.
+   */
+  --color-accent-fg: #fdfdfc;
+  --color-danger: #8f2f28;
+  --color-ok: #4f6b3f;
   --font-sans: "Instrument Sans Variable", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+
+  /* Motion. Values from the reference, so the whole app eases alike. */
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-art: cubic-bezier(0.2, 0.75, 0.2, 1);
+}
+
+/*
+ * Cross-page fade. Needs experimental.viewTransition in next.config.ts, which is
+ * what wraps client navigations in startViewTransition.
+ *
+ * Honest caveat: 8 of the 9 screens still fetch after hydration, so navigating
+ * INTO them fades a full page out and a spinner in. Wardrobe is the exception —
+ * it server-renders, so that one transition lands on real content. If the rest
+ * read worse than a hard cut, this block and the config flag come out together.
+ */
+@view-transition {
+  navigation: auto;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 200ms;
+  animation-timing-function: var(--ease-out);
 }
 
 html {
@@ -19,6 +61,9 @@ html {
   color: var(--color-fg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Instrument Sans is variable across the weights we use — never fake one. */
+  font-synthesis: none;
 }
 
 ::selection {
@@ -41,13 +86,87 @@ html {
 }
 
 /*
- * Lifts dark garments off the near-black page. Applied only to transparent
- * cutout thumbnails (.png) — the glow hugs the garment silhouette, so no
- * rectangular edge can ever appear. Taste knob; alternatives:
- *   softer, uniform per-tile wash instead of a rim:
- *     background: radial-gradient(ellipse 70% 60% at 50% 45%, rgb(244 240 232 / 0.05), transparent 70%);
- *   or warm the whole page one step (in @theme): --color-bg: #12100d;
+ * Grounds the garment on its tile. Applied only to transparent cutouts (.png)
+ * via garmentGlowClass() — the shadow hugs the silhouette, so it reads as the
+ * garment resting on paper rather than a rectangle with a box-shadow. Opaque
+ * JPEG fallbacks have their own edge and get nothing.
+ *
+ * Warm-toned rather than neutral grey: a grey shadow on paper looks like a
+ * printing error. Deepens on hover, in step with the garment lifting.
  */
-.garment-glow {
-  filter: drop-shadow(0 0 18px rgb(244 240 232 / 0.1)) drop-shadow(0 0 4px rgb(244 240 232 / 0.14));
+.garment-shadow {
+  filter: drop-shadow(0 18px 18px rgb(39 31 23 / 0.16));
+  transition: filter 280ms var(--ease-art);
+}
+.group:hover .garment-shadow {
+  filter: drop-shadow(0 24px 23px rgb(39 31 23 / 0.21));
+}
+
+/*
+ * The garment breathes on hover — rests slightly small, comes to full size when
+ * you point at it. Lifted from the reference, values and all. Kept in CSS rather
+ * than Tailwind utilities so the rest state, the hover state and the
+ * reduced-motion override all read in one place.
+ */
+.garment-lift {
+  transform: scale(0.94);
+  transition: transform 280ms var(--ease-art);
+}
+.group:hover .garment-lift {
+  transform: scale(1);
+}
+
+/*
+ * Tiles arrive rather than snap in. --i is the tile's index, set inline by
+ * ItemCard and CAPPED there, so tile 40 does not wait a second and a half.
+ */
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.tile-in {
+  animation: tile-in 320ms var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+
+/* Content cross-dissolves when a filter changes, instead of flashing. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.fade-in {
+  animation: fade-in 180ms ease-out both;
+}
+
+/*
+ * One switch for everything the overhaul animates. Anything added later that
+ * moves belongs in here too.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .tile-in,
+  .fade-in {
+    animation: none;
+  }
+  .garment-shadow,
+  .garment-lift {
+    transition: none;
+  }
+  .garment-lift {
+    transform: none !important;
+  }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }

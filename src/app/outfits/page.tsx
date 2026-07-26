@@ -6,7 +6,9 @@ import { apiGet, apiSend } from "@/lib/api";
 import {
   FORMALITIES, type Outfit, type OutfitSuggestion,
 } from "@/shared/types";
-import { Button, Empty, PageTitle, Spinner, inputClass, itemThumb } from "@/components/ui";
+import {
+  Button, Empty, PageTitle, Spinner, inputClass, itemLabel, itemThumb,
+} from "@/components/ui";
 import { useToast } from "@/components/providers";
 
 function OutfitItems({ items }: { items: OutfitSuggestion["items"] }) {
@@ -14,17 +16,18 @@ function OutfitItems({ items }: { items: OutfitSuggestion["items"] }) {
     <div className="flex gap-2">
       {items.map(({ item, slot }) => {
         const thumb = itemThumb(item);
+        const label = itemLabel(item);
         return (
           <div key={item.id} className="w-24">
             <div className="aspect-square border border-line bg-surface">
               {thumb ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={thumb} alt={item.name} className="h-full w-full object-contain p-1" />
+                <img src={thumb} alt={label} className="h-full w-full object-contain p-1" />
               ) : null}
             </div>
-            <div className="mt-1 truncate text-[10px] text-muted" title={item.name}>
+            <div className="mt-1 truncate text-[10px] text-muted" title={item.name || undefined}>
               <span className="text-faint">{slot.replace("_", " ")} · </span>
-              {item.name}
+              {label}
             </div>
           </div>
         );

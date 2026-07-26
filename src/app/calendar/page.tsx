@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "@/lib/api";
 import type { Outfit, Plan } from "@/shared/types";
-import { Button, PageTitle } from "@/components/ui";
+import { Button, PageTitle, itemLabel } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -20,7 +20,9 @@ function monthMeta(year: number, month: number) {
 }
 
 function outfitLabel(o: Outfit): string {
-  return o.name || o.items.map((x) => x.item.name).join(" + ");
+  // An outfit's own name is user-given, so it stays; only the garment names it
+  // falls back to are AI-written and get labels instead.
+  return o.name || o.items.map((x) => itemLabel(x.item)).join(" + ");
 }
 
 export default function CalendarPage() {
@@ -176,11 +178,13 @@ export default function CalendarPage() {
 
       {pickerDate ? (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-bg/80"
+          // Ink scrim, not a page-colour one: bg-bg/80 was a dark wash over
+          // content when the page was near-black, but on white it dims nothing.
+          className="fade-in fixed inset-0 z-40 flex items-center justify-center bg-fg/25"
           onClick={() => setPickerDate(null)}
         >
           <div
-            className="w-full max-w-md border border-line bg-surface p-6"
+            className="w-full max-w-md border border-line bg-surface p-6 shadow-[0_18px_50px_rgb(25_24_22/0.12)]"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
