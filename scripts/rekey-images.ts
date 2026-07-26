@@ -78,7 +78,23 @@ function setThumbnail(
 ): void {
   const existing = imageRow(itemId, role);
   if (!existing) {
-    upsertImage(itemId, role, absPath, buffer);
+    // NOT upsertImage(): that helper is for transparent_front/back, where a
+    // null width/height is correct (they are the un-normalized cutout). A tile
+    // role always has known dimensions, and this branch is exactly what runs
+    // the first time `thumbnail_back` is created for an item — every existing
+    // two-sided item hits it once, on this backfill.
+    db.insert(schema.itemImages)
+      .values({
+        id: newId(),
+        itemId,
+        role: role as never,
+        path: relativeImagePath(absPath),
+        width: w,
+        height: h,
+        sha256: sha256Of(buffer),
+        createdAt: nowIso(),
+      })
+      .run();
     return;
   }
   db.update(schema.itemImages)
