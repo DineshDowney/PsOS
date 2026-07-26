@@ -151,6 +151,28 @@ export interface ImportJob {
   item?: Item;
 }
 
+export type RegenSide = "front" | "back";
+
+export interface RegenSideResult {
+  ok: boolean;
+  /** Which cutout rung produced it, or "opaque" — set when ok is true. */
+  how?: string;
+  /** Set when ok is false: the model declined, or there was no source photo. */
+  error?: string;
+}
+
+export interface RegenJob {
+  id: string;
+  itemId: string;
+  sides: RegenSide[];
+  feedback: string;
+  status: "queued" | "running" | "done" | "failed";
+  results: Partial<Record<RegenSide, RegenSideResult>>;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Outfit {
   id: string;
   name: string | null;

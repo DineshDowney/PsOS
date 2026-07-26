@@ -42,7 +42,8 @@ export function imageModels(): string[] {
   return DEFAULT_MODELS;
 }
 
-const PROMPT = `Recreate this exact garment as a single catalog product shot with the
+/** Exported for image-generation.test.ts's byte-identity check. */
+export const PROMPT_BASE = `Recreate this exact garment as a single catalog product shot with the
 background removed.
 
 OUTPUT FORMAT
@@ -88,6 +89,42 @@ first time.
 
 Output only the image.`;
 
+/**
+ * Grounding for a regeneration, added 2026-07-26. Optional and additive: every
+ * existing caller (the import pipeline's first pass, the batch script with no
+ * facts computed yet) passes nothing and gets PROMPT_BASE back byte-for-byte —
+ * verified in image-generation.test.ts so this never silently drifts.
+ */
+export interface RegenContext {
+  /**
+   * Pre-formatted lines like "Colour: Oatmeal (heathered)", built by the caller
+   * from the item's CURRENT metadata (post user-edits). Deliberately excludes
+   * brand: naming a brand risks the model drawing a generic version of that
+   * logo instead of copying the exact pixels in the photo, which fights the
+   * IDENTITY section's "reproduce it as it appears" rule below.
+   */
+  facts?: string[];
+  /** Dinesh's own words on what was wrong last time. Empty/omitted = no section. */
+  feedback?: string;
+}
+
+/** Exported for image-generation.test.ts. */
+export function buildPrompt(context?: RegenContext): string {
+  let prompt = PROMPT_BASE;
+  if (context?.facts?.length) {
+    prompt += `\n\nKNOWN FACTS ABOUT THIS GARMENT (from cataloguing — trust these over your own
+read of the photo where they disagree)
+${context.facts.map((f) => `- ${f}`).join("\n")}`;
+  }
+  const feedback = context?.feedback?.trim();
+  if (feedback) {
+    prompt += `\n\nREQUIRED FIX FOR THIS REGENERATION (Dinesh's own words — follow this
+precisely, even where it means overriding a default above)
+"${feedback}"`;
+  }
+  return prompt;
+}
+
 export interface ProductShotResult {
   png: Buffer;
   model: string;
@@ -112,18 +149,20 @@ const imageCallLimiter = createLimiter(1);
 export async function generateProductShot(
   crop: Buffer,
   mimeType = "image/jpeg",
+  context?: RegenContext,
 ): Promise<ProductShotResult | null> {
-  return imageCallLimiter(() => generateProductShotNow(crop, mimeType));
+  return imageCallLimiter(() => generateProductShotNow(crop, mimeType, context));
 }
 
 async function generateProductShotNow(
   crop: Buffer,
   mimeType: string,
+  context?: RegenContext,
 ): Promise<ProductShotResult | null> {
   try {
     const result = await generateContent({
       models: imageModels(),
-      parts: [{ text: PROMPT }, inlineImage(crop, mimeType)],
+      parts: [{ text: buildPrompt(context) }, inlineImage(crop, mimeType)],
       responseModalities: ["IMAGE"],
       temperature: 0.1,
     });

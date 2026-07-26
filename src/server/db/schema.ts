@@ -275,6 +275,37 @@ export const importJobs = sqliteTable("import_jobs", {
   updatedAt: text("updated_at").notNull(),
 });
 
+/**
+ * On-demand image regeneration for an already-catalogued item (2026-07-26).
+ * Separate from import_jobs on purpose: this never creates or reviews an item,
+ * it only replaces the generated/transparent/tile images for one or both
+ * sides of an existing one. Async + polled (not a blocking request) because a
+ * "both sides" regen is 1-2 sequential Gemini calls, 15-40s.
+ */
+export const regenJobs = sqliteTable(
+  "regen_jobs",
+  {
+    id: text("id").primaryKey(),
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    /** JSON string[], subset of ("front" | "back") */
+    sides: text("sides").notNull(),
+    /** Dinesh's own words on what to fix this run. "" when left blank. */
+    feedback: text("feedback").notNull().default(""),
+    status: text("status", { enum: ["queued", "running", "done", "failed"] })
+      .notNull()
+      .default("queued"),
+    /** JSON Partial<Record<side, { ok, how?, error? }>> — per-side outcome */
+    results: text("results"),
+    /** Set only when the job itself crashed, not when a side's generation failed */
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("regen_jobs_item_idx").on(t.itemId)],
+);
+
 /** Audit trail for user, AI and system actions. Doubles as the AI action log. */
 export const activityLog = sqliteTable(
   "activity_log",

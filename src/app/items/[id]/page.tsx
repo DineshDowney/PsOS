@@ -1,13 +1,14 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "@/lib/api";
 import {
-  CATEGORIES, FORMALITIES, type Item, type WearEvent,
+  CATEGORIES, FORMALITIES,
+  type Item, type RegenJob, type RegenSide, type WearEvent,
 } from "@/shared/types";
 import {
   Button,
@@ -24,25 +25,58 @@ import {
 } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
+/** Horizontal px of swipe before it counts as a deliberate gesture, not a tap. */
+const SWIPE_THRESHOLD_PX = 40;
+
 /**
- * One square frame that crossfades between the garment shots (front/back) on
- * a timer. Click advances immediately. A single photo renders statically.
+ * One square frame that crossfades between the garment shots.
+ *
+ * Four ways to drive one index: the auto-cycle, arrow buttons, swipe, and the
+ * dots. Any MANUAL navigation stops the auto-cycle permanently — a carousel
+ * that yanks itself forward a second after you deliberately chose a photo is
+ * the single most irritating thing this component could do.
  */
 function RotatingPhotos({ images, name }: { images: Item["images"]; name: string }) {
   const [index, setIndex] = useState(0);
-  useEffect(() => {
-    if (images.length < 2) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const t = setInterval(() => setIndex((i) => (i + 1) % images.length), 4000);
-    return () => clearInterval(t);
-  }, [images.length]);
+  const [manual, setManual] = useState(false);
+  const touchStartX = useRef<number | null>(null);
+  const count = images.length;
 
-  if (images.length === 0) return null;
+  useEffect(() => {
+    if (count < 2 || manual) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const t = setInterval(() => setIndex((i) => (i + 1) % count), 4000);
+    return () => clearInterval(t);
+  }, [count, manual]);
+
+  // Clamp if the photo list shrinks under us (a regen can change how many
+  // slots exist), so the frame never goes blank on a stale index.
+  useEffect(() => {
+    setIndex((i) => (i < count ? i : 0));
+  }, [count]);
+
+  const go = (delta: number) => {
+    setManual(true);
+    setIndex((i) => (i + delta + count) % count);
+  };
+
+  if (count === 0) return null;
+  const many = count > 1;
+
   return (
     <div
-      className="relative aspect-square w-full cursor-pointer bg-surface"
-      onClick={() => setIndex((i) => (i + 1) % images.length)}
-      title={images.length > 1 ? "click to flip" : undefined}
+      className="group relative aspect-square w-full select-none bg-surface"
+      onTouchStart={(e) => {
+        touchStartX.current = e.touches[0]?.clientX ?? null;
+      }}
+      onTouchEnd={(e) => {
+        const start = touchStartX.current;
+        touchStartX.current = null;
+        if (start === null || !many) return;
+        const dx = (e.changedTouches[0]?.clientX ?? start) - start;
+        if (Math.abs(dx) < SWIPE_THRESHOLD_PX) return;
+        go(dx < 0 ? 1 : -1); // drag left = next
+      }}
     >
       {images.map((img, i) => (
         // eslint-disable-next-line @next/next/no-img-element
@@ -57,17 +91,181 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
           )}
         />
       ))}
-      {images.length > 1 ? (
-        <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1.5">
-          {images.map((img, i) => (
-            <span
-              key={img.id}
+
+      {many ? (
+        <>
+          {/* Always visible on touch (no hover to reveal them); fade in on pointer devices. */}
+          {([
+            { dir: -1, side: "left", glyph: "‹", label: "Previous photo" },
+            { dir: 1, side: "right", glyph: "›", label: "Next photo" },
+          ] as const).map(({ dir, side, glyph, label }) => (
+            <button
+              key={side}
+              type="button"
+              aria-label={label}
+              onClick={() => go(dir)}
               className={clsx(
-                "h-1.5 w-1.5 rounded-full transition-[transform,background-color] duration-200",
-                i === index ? "scale-125 bg-fg" : "bg-line",
+                "absolute top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center",
+                "border border-line bg-bg/80 text-lg leading-none text-muted backdrop-blur-sm",
+                "transition-[opacity,color,border-color] duration-200 hover:border-fg hover:text-fg",
+                "active:scale-95 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+                side === "left" ? "left-2" : "right-2",
               )}
-            />
+            >
+              {glyph}
+            </button>
           ))}
+
+          <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1.5">
+            {images.map((img, i) => (
+              <button
+                key={img.id}
+                type="button"
+                aria-label={`Photo ${i + 1}`}
+                onClick={() => {
+                  setManual(true);
+                  setIndex(i);
+                }}
+                className={clsx(
+                  "h-1.5 w-1.5 rounded-full transition-[transform,background-color] duration-200",
+                  i === index ? "scale-125 bg-fg" : "bg-line hover:bg-muted",
+                )}
+              />
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Gemini flash-image list price, for the inline estimate on the button. */
+const COST_PER_SIDE = 0.04;
+
+const REGEN_SIDE_OPTIONS = [
+  { value: "both", label: "Both" },
+  { value: "front", label: "Front" },
+  { value: "back", label: "Back" },
+] as const;
+
+/**
+ * Regenerate the studio shots for this item, with the current metadata and a
+ * free-text note as grounding.
+ *
+ * Async by design: a two-sided regen is 15-40s of sequential Gemini calls, so
+ * this POSTs a job and polls it rather than holding a request open across the
+ * Funnel relay. Navigating away loses the poller, not the job — the new photos
+ * are simply there next time the page loads.
+ */
+function RegenPanel({ item }: { item: Item }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [choice, setChoice] = useState<string>("both");
+  const [feedback, setFeedback] = useState("");
+  const [jobId, setJobId] = useState<string | null>(null);
+
+  const sides: RegenSide[] = choice === "both" ? ["front", "back"] : [choice as RegenSide];
+  const hasBack = item.images.some((i) => i.role === "back" || i.role === "back_cropped");
+
+  const start = useMutation({
+    mutationFn: () =>
+      apiSend<{ job: RegenJob }>(`/api/items/${item.id}/regenerate`, "POST", {
+        sides,
+        feedback: feedback.trim() || undefined,
+      }),
+    onSuccess: ({ job }) => setJobId(job.id),
+  });
+
+  const { data: jobData } = useQuery({
+    queryKey: ["regen-job", jobId],
+    queryFn: () => apiGet<{ job: RegenJob }>(`/api/regen-jobs/${jobId}`),
+    enabled: Boolean(jobId),
+    refetchInterval: (query) => {
+      const s = query.state.data?.job.status;
+      return s === "queued" || s === "running" ? 2000 : false;
+    },
+  });
+
+  const job = jobData?.job;
+  const running = Boolean(jobId) && (job?.status === "queued" || job?.status === "running" || start.isPending);
+
+  // Report once when the job settles, then refresh the photos.
+  const settledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!job || (job.status !== "done" && job.status !== "failed")) return;
+    if (settledRef.current === job.id) return;
+    settledRef.current = job.id;
+
+    if (job.status === "failed") {
+      toast("error", job.error ?? "Regeneration failed");
+    } else {
+      const failures = sides.filter((s) => job.results[s] && !job.results[s]!.ok);
+      if (failures.length === sides.length) {
+        toast("error", job.results[failures[0]!]?.error ?? "Regeneration produced nothing");
+      } else if (failures.length > 0) {
+        toast("error", `${failures.join(" and ")} failed — the rest was updated`);
+      } else {
+        toast("info", `Regenerated ${sides.join(" and ")}`);
+        setFeedback("");
+      }
+    }
+    setJobId(null);
+    void qc.invalidateQueries({ queryKey: ["item", item.id] });
+    void qc.invalidateQueries({ queryKey: ["items"] });
+  }, [job, sides, toast, qc, item.id]);
+
+  return (
+    <div className="border border-line">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between px-4 py-3 text-[10px] uppercase tracking-[0.08em] text-muted transition-colors hover:text-fg"
+      >
+        Regenerate images
+        <span className={clsx("transition-transform duration-200", open && "rotate-45")}>+</span>
+      </button>
+
+      {open ? (
+        <div className="flex flex-col gap-4 border-t border-line p-4">
+          <SegmentedControl
+            options={REGEN_SIDE_OPTIONS.filter((o) => hasBack || o.value === "front")}
+            value={hasBack ? choice : "front"}
+            onChange={setChoice}
+          />
+          {!hasBack ? (
+            <p className="text-[10px] text-faint">
+              No back photo on file — only the front can be regenerated.
+            </p>
+          ) : null}
+
+          <Field label="What was wrong?" hint="optional">
+            <textarea
+              className={`${inputClass} min-h-20`}
+              placeholder="e.g. the back came out as a different shirt — it should have the same print as the front"
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+            />
+          </Field>
+
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[10px] uppercase tracking-[0.08em] text-faint">
+              {running
+                ? job?.status === "queued"
+                  ? "Queued…"
+                  : "Generating — this takes 15-40s"
+                : "Replaces the current images"}
+            </span>
+            <Button
+              variant="solid"
+              disabled={running}
+              onClick={() => start.mutate()}
+            >
+              {running
+                ? "Working…"
+                : `Regenerate · ~$${(sides.length * COST_PER_SIDE).toFixed(2)}`}
+            </Button>
+          </div>
         </div>
       ) : null}
     </div>
@@ -262,6 +460,8 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
               </Button>
             ) : null}
           </div>
+
+          <RegenPanel item={item} />
         </div>
 
         <div className="flex max-w-2xl flex-col gap-8">
