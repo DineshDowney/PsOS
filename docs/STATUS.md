@@ -5,9 +5,10 @@ Last updated: 2026-07-26.
 
 ## Current objective
 
-**Phase 3 A+B, 2026-07-26.** The app has a real HTTPS URL that survives reboots, and the VM
-stays awake while there is work or a human, then sleeps on its own. Next up is the bulk
-front-only photo upload, then the UI redesign (Phase C, deferred by Dinesh).
+**Phase C, 2026-07-26.** The app is light mode: white page, garments on paper grounds at 240px
+portrait, names off the front end, CSS-only motion, and the wardrobe server-rendered so the
+landing screen no longer opens on a spinner. Awaiting Dinesh's browser judgement on the look.
+Next up is the off-machine backup (highest risk) and the bulk front-only photo upload.
 
 ## The URL
 
@@ -42,6 +43,12 @@ hits the VM directly.
 | VM config in git | `deploy/vm/` — units, keepalive script, install steps |
 | BiRefNet segmentation | **Dropped** as a direction; opt-in via `PSOS_BG_ENGINE=birefnet`, imgly is the default |
 | Editorial UI (wardrobe/item/import) | Shipped `5babeec` |
+| **Theme** | **Light.** White page `#fdfdfc`, paper garment grounds `#f4f1ea`, burgundy accent `#6e302e`, ink `#191817`. All 9 screens via semantic tokens in `globals.css` |
+| **Garment separation** | `.garment-shadow` — warm drop-shadow under transparent cutouts, deepening on hover. Replaces `.garment-glow`, which existed for the same reason on near-black |
+| **Item labels** | Names hidden on **every** screen; `itemLabel()` in `components/ui.tsx` is the one definition (colour · subcategory). Column, editor field, AI inference and search all unchanged |
+| **Tiles** | 240px, portrait `aspect-ratio: .78`. Thumbnails were already 640px square, so no pipeline work |
+| **Motion** | CSS only, **0 KB added**. Tile entrance stagger (capped at 12), hover garment lift, filter cross-dissolve, cross-page fade. One `prefers-reduced-motion` block disables all of it |
+| **First paint** | `/wardrobe` **server-renders** (`listItems` is sync, so no HTTP hop) and is `force-dynamic`. The other 8 screens still fetch after hydration — they still open on a spinner |
 | App icon | Done (`src/app/icon.svg`) |
 
 ## Live findings (2026-07-25 session)
@@ -284,11 +291,10 @@ Highest value first:
    laptop copies on 2026-07-26 left **one copy of the wardrobe, on the VM's disk**. `gsutil rsync`
    from the VM to a bucket, ~160 MB, pennies a month, laptop never touches it. Settings → Export
    does not cover this — it downloads to the laptop, which is what Dinesh does not want.
-1. **UI redesign (Phase C).** Next up — Dinesh, 2026-07-26, immediately after the cutout fix.
-   Measured complaint: 12 motion-related utilities across 1,958 lines of TSX, no animation
-   library — but the real cause is structural, not decorative: every screen is `"use client"` +
-   fetch-after-hydration, so first paint is an empty page with a spinner. Server-render the first
-   screenful before touching any visual direction.
+1. **Server-render the remaining 8 screens.** Phase C did `/wardrobe` only, by Dinesh's scoping,
+   and it is the pattern to copy: `page.tsx` server shell reading the service directly + a client
+   island, `force-dynamic`, `initialData` seeding. Until this lands, every screen except the
+   landing one opens on a spinner — and the cross-page fade is fading *into* those spinners.
 2. **Housekeeping from the contact sheet** (finding 16): un-archive one Indigo Block-Print
    Kurta, name + categorise the two unnamed items, resolve or discard the stuck draft, and move
    `Maroon Jockey Boxer Briefs` off `accessory`.

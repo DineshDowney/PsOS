@@ -3,6 +3,94 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-26 — Light mode: white page, paper tiles, and no garment names on screen
+Dinesh: *"I think i wanna go light mode. White background. Make the items more bigger. Remove
+the names. we don;t need names on front end. Just labels."* Plus motion, *"aesthetically clean
+and beautiful like major brands"*, and the look nudged toward `tandpfun/wardrobe`.
+
+**The reference was worth reading rather than guessing at.** Dinesh authorised a one-off
+`github.com` fetch (the no-external-HTTP-from-the-laptop rule otherwise stands). Its
+`src/styles.css` uses **the same typeface psos already used** — `Instrument Sans Variable` — and
+the same zero border-radius. psos was effectively its dark-mode sibling, so this was a palette
+and depth change, not a redesign.
+
+**White page, paper tiles — not the reference's all-over cream.** He asked for white; the
+reference is `#f4f0e8` throughout. Splitting it deliberately: page `#fdfdfc`, garment ground
+`#f4f1ea`. This is load-bearing, not taste. Catalog thumbnails are **transparent cutouts**, so a
+cream garment on a white page has no edge at all — the mirror of the problem `.garment-glow`
+existed to solve on near-black. On paper it gets two separations: the tile against the page, and
+the shadow underneath.
+
+**`.garment-glow` → `.garment-shadow`**, taking the reference's warm `drop-shadow(0 18px 18px
+rgb(39 31 23 / .16))`, deepening on hover. Warm rather than neutral: a grey shadow on paper reads
+as a printing error. Same `.png`-only gate — the shadow hugs a silhouette, so an opaque JPEG
+fallback (which has its own rectangular edge) gets nothing.
+
+**Accent moved from terracotta `#a84b42` to the reference's burgundy `#6e302e`.** Terracotta on
+cream is the most over-produced palette in circulation right now; burgundy on white reads chosen.
+Burgundy is also a *smaller* contrast step against white than terracotta was against near-black,
+so the active nav item gained a weight change on top of the colour — colour alone stopped being
+findable at 11px.
+
+**`--color-accent-fg` is a bug fix, not a token for neatness.** Three places did
+`hover:bg-accent hover:text-fg` (solid `Button`, the login submit, the wardrobe `+`). The instant
+`fg` became ink that was near-black text on dark red. Same class of latent bug: the calendar's
+modal scrim was `bg-bg/80`, a dark wash while the page was near-black and *nothing at all* on
+white — now an ink scrim.
+
+**Tiles: 160px → 240px, square → portrait `aspect-ratio: .78`.** Worth recording that the
+reference's tiles are *not* bigger than ours were (165 vs 160) — "bigger" was Dinesh's own
+instruction and won on its own merit. The portrait ratio is the reference's and is the better
+idea: garments are taller than wide, so square framing wasted the sides. No pipeline work either
+way — thumbnails are already generated at 640px square.
+
+**Not adopted: the reference's right-hand slide-over detail view.** Our item page carries a
+15-field edit form with provenance markers; a side panel would cramp it. The route stays.
+
+### Names are hidden, not removed
+`itemLabel()` in `components/ui.tsx` is the single definition — `primaryColor`, then
+`subcategory ?? category`, falling through to the name and then `"Untitled"` so a bare draft with
+neither colour nor category never renders as an empty row. Every screen that showed a name now
+shows a label, with the name surviving as a `title` tooltip.
+
+Kept: the column, the editor field, the AI inference, and search — `listItems` already matches
+name/description/brand/subcategory, so hiding the name costs no searchability, and the stylist
+chat still has something to say.
+
+**The cost is that labels are not unique**, and it bit harder than expected: the analytics bars
+keyed rows by label, so two pairs of blue jeans would have collapsed into one row with a React
+duplicate-key warning. Keyed by index now. A real disambiguator is not worth building for a
+24-item wardrobe.
+
+### Motion: CSS only, one switch to turn it all off
+No motion library. `motion`/framer is ~34 KB gzipped and buys spring physics and layout
+animation that nothing here needs — against an explicit *"I don't want a heavy ass website"*.
+The reference's easings are now tokens (`--ease-out`, `--ease-art`) so the whole app eases alike.
+Tiles fade in and rise on a stagger **capped at 12** so tile 40 does not wait a second and a
+half. Filter changes cross-dissolve via `keepPreviousData` rather than blanking to a spinner.
+Every piece is disabled by one `prefers-reduced-motion` block.
+
+The cross-page fade (`@view-transition` + `experimental.viewTransition`) is the one purely
+cosmetic thing here, and is flagged in the CSS as removable without consequence. It may well read
+worse than a hard cut: 8 of 9 screens still fetch after hydration, so navigating into them fades
+a full page out and a *spinner* in. Kept because Dinesh approved it and it is two seconds to
+judge in a browser; delete the flag and the CSS block together if it is ugly.
+
+### Wardrobe is the first screen that server-renders
+Every screen was `"use client"` + fetch-after-hydration, so the app opened on a spinner. Fixed on
+the landing screen only, by his scoping. `listItems` is **synchronous** (better-sqlite3), so the
+server component reads the DB directly — no HTTP hop, no `await`, and the grid arrives with the
+HTML. `page.tsx` is the server shell, `grid.tsx` the client island; filtering still happens
+client-side, seeded on the unfiltered query key.
+
+**`export const dynamic = "force-dynamic"` is load-bearing.** Without it Next prerenders the
+wardrobe at build time and the deployed app serves whatever was in the DB when `npm run build`
+ran, forever.
+
+This introduces the only server/client boundary in a codebase that previously had exactly one
+pattern (everything client). Small blast radius, but it is a new pattern — the remaining 8
+screens are unconverted and stay that way until someone asks.
+
 ## 2026-07-26 — Uploads go through a client-side queue, and photos shrink to 3000px first
 Front+back is ~11.4 MB and takes 10–15s over Funnel. For all of it the Start button was
 disabled and the file inputs still held the last pick, so the next garment could not be staged.
