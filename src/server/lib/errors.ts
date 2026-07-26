@@ -31,6 +31,10 @@ export function badRequest(message: string, detail?: unknown): AppError {
   return new AppError("bad_request", message, 400, detail);
 }
 
+export function tooLarge(message: string, detail?: unknown): AppError {
+  return new AppError("too_large", message, 413, detail);
+}
+
 type Handler<Ctx> = (req: Request, ctx: Ctx) => Promise<Response>;
 
 export function withErrorHandling<Ctx>(handler: Handler<Ctx>): Handler<Ctx> {
