@@ -4,14 +4,14 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend } from "@/lib/api";
 import {
-  FORMALITIES, type Outfit, type OutfitSuggestion,
+  FORMALITIES, type Outfit, type StyledSuggestion, type StylistResult,
 } from "@/shared/types";
 import {
   Button, Empty, PageTitle, Spinner, inputClass, itemLabel, itemThumb,
 } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
-function OutfitItems({ items }: { items: OutfitSuggestion["items"] }) {
+function OutfitItems({ items }: { items: StyledSuggestion["items"] }) {
   return (
     <div className="flex gap-2">
       {items.map(({ item, slot }) => {
@@ -40,7 +40,8 @@ export default function OutfitsPage() {
   const toast = useToast();
   const qc = useQueryClient();
   const [formality, setFormality] = useState("");
-  const [suggestions, setSuggestions] = useState<OutfitSuggestion[] | null>(null);
+  const [result, setResult] = useState<StylistResult | null>(null);
+  const suggestions = result?.suggestions ?? null;
 
   const { data: savedData } = useQuery({
     queryKey: ["outfits"],
@@ -49,11 +50,11 @@ export default function OutfitsPage() {
 
   const suggest = useMutation({
     mutationFn: () =>
-      apiSend<{ suggestions: OutfitSuggestion[] }>("/api/outfits/suggest", "POST", {
+      apiSend<StylistResult>("/api/outfits/suggest", "POST", {
         formality: formality || undefined,
         count: 4,
       }),
-    onSuccess: (d) => setSuggestions(d.suggestions),
+    onSuccess: setResult,
   });
 
   const wear = useMutation({
@@ -70,7 +71,7 @@ export default function OutfitsPage() {
   });
 
   const save = useMutation({
-    mutationFn: (s: OutfitSuggestion) =>
+    mutationFn: (s: StyledSuggestion) =>
       apiSend<{ outfit: Outfit }>("/api/outfits", "POST", {
         items: s.items.map((x) => ({ itemId: x.item.id, slot: x.slot })),
       }),
@@ -82,7 +83,7 @@ export default function OutfitsPage() {
 
   return (
     <div>
-      <PageTitle sub="Generated from available pieces — laundry is excluded automatically.">
+      <PageTitle sub="Built from what's clean and available, then judged on how the pieces actually look together.">
         Outfit Studio
       </PageTitle>
 
@@ -99,17 +100,32 @@ export default function OutfitsPage() {
         </Button>
       </div>
 
-      {suggest.isPending ? <Spinner label="Generating" /> : null}
+      {/* Several seconds, because it is looking at the garment images. */}
+      {suggest.isPending ? <Spinner label="Looking at your wardrobe" /> : null}
 
       {suggestions && suggestions.length === 0 ? (
         <Empty>Not enough available items to build an outfit (need tops + bottoms or a full-body piece).</Empty>
+      ) : null}
+
+      {/*
+        The engine always answers; the model only ranks. Saying which one you are
+        looking at matters — an unstyled list is not broken, it is just blunter,
+        and silently degrading would make that indistinguishable from a bad model.
+      */}
+      {result?.fallbackReason ? (
+        <p className="mb-6 text-xs text-muted">Ranked by the engine — {result.fallbackReason}.</p>
       ) : null}
 
       {suggestions && suggestions.length > 0 ? (
         <div className="mb-14 flex flex-col gap-6">
           {suggestions.map((s, idx) => (
             <div key={idx} className="flex flex-wrap items-center justify-between gap-4 border border-line bg-surface p-5">
-              <OutfitItems items={s.items} />
+              <div className="flex flex-col gap-3">
+                <OutfitItems items={s.items} />
+                {s.reason ? (
+                  <p className="max-w-md text-xs leading-relaxed text-muted">{s.reason}</p>
+                ) : null}
+              </div>
               <div className="flex items-center gap-2">
                 <span className="mr-2 text-[10px] uppercase tracking-[0.2em] text-faint">match {Math.round(s.score * 100)}%</span>
                 <Button onClick={() => save.mutate(s)}>Save</Button>

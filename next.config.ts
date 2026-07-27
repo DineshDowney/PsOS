@@ -22,7 +22,6 @@ const nextConfig: NextConfig = {
   serverExternalPackages: [
     "better-sqlite3",
     "sharp",
-    "@imgly/background-removal-node",
     "@anthropic-ai/claude-agent-sdk",
     "archiver",
   ],

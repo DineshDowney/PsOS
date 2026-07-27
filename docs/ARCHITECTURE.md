@@ -1,8 +1,13 @@
-# Architecture
+# Architecture — the one-page map
 
 Local-first, single-user Next.js 15 app. One process, one folder of state (`data/`).
-Since 2026-07-15 a production copy runs on GCP VM `psos-1` (systemd service, IP-allowlisted
-port 3000) — see the deployment notes in `docs/IMPORT_PIPELINE.md` and `docs/DECISIONS.md`.
+A production copy runs on GCP VM `psos-1` (systemd service, reachable over Tailscale
+Funnel — no inbound port).
+
+**This page is the map. `docs/DESIGN.md` is the territory** — it explains how every
+component connects to every other and why each choice was made. Read this to find
+something; read that to understand it. `docs/DECISIONS.md` is the dated record of how we
+got here.
 
 ## Layout
 
@@ -13,16 +18,22 @@ src/
   lib/api.ts           typed fetch client; all errors surface as toasts
   shared/types.ts      domain types shared by server and client
   server/
-    db/                Drizzle schema + singleton client (WAL SQLite, auto-migrate at boot)
-    lib/               errors (AppError + withErrorHandling), ids, json helpers
-    services/          business logic: catalog, provenance, wear, outfits, plans,
-                       analytics, settings, activity (audit log)
+    db/                Drizzle schema + singleton client (WAL SQLite; migrations applied by
+                       scripts/boot.ts before the server starts — see DESIGN.md §3.5)
+    lib/               no-domain primitives: errors, ids, json, limiter, work-hold,
+                       keepalive, upload-limits, login-throttle
+    services/          business logic: catalog, provenance, wear, outfits, outfit-stylist,
+                       plans, analytics, settings, activity (audit log), duplicates
     engine/            deterministic outfit engine + color model (pure, unit-tested)
-    imaging/           storage layout, thumbnails, dominant colors, background removal
-    imports/           the 5-stage import pipeline
-    ai/                agent.ts (Agent SDK wrapper) · extraction.ts (photo → metadata)
-                       tools.ts (wardrobe MCP tools + chat system prompt) · chat.ts (SSE)
-scripts/               seed.ts (placeholder wardrobe) · launch-psos.cmd (desktop launcher)
+    imaging/           storage, thumbnails/tiles, cutout ladder + QA, flat-key,
+                       on-demand regeneration
+    imports/           the 7-stage import pipeline
+    ai/                vertex-client.ts (Gemini HTTP) · extraction.ts (photo → metadata)
+                       image-generation.ts (product shots) · agent.ts (Claude Agent SDK,
+                       chat only) · tools.ts (wardrobe MCP tools) · chat.ts (SSE)
+scripts/               boot.ts (migrate + recover, runs as npm prestart/predev) ·
+                       seed.ts (placeholder wardrobe) · vertex-probe.ts (what models
+                       the current credentials can reach) · cutout-diag.ts
 drizzle/               generated SQL migrations (npm run db:generate after schema changes)
 data/                  gitignored: stylist.db + images/<itemId>/<role>.<ext>
 ```
@@ -32,42 +43,60 @@ data/                  gitignored: stylist.db + images/<itemId>/<role>.<ext>
 1. **Provenance** — every editable item field tracks `ai` | `user` source. User edits win
    forever; AI writes only untouched fields. All field writes go through
    `services/catalog.ts` (`updateItemFields` for users, `applyInferenceToItem` for AI).
-2. **AI boundary** — nothing imports the Agent SDK except `server/ai/agent.ts`. Auth rides
-   the machine's Claude Code login; there is no API key anywhere.
-3. **Engine over LLM** — outfit combinations come from `engine/outfit-engine.ts`. Chat's
-   `suggest_outfits` tool calls the same engine.
+2. **AI boundary** — one entry point per provider: nothing imports the Agent SDK except
+   `server/ai/agent.ts` (chat only; auth rides the machine's Claude Code login, no key), and
+   nothing calls Gemini except `server/ai/vertex-client.ts` (env key or VM service account —
+   **never** from `settings`, which is served publicly). Everything that looks at a garment
+   runs on Gemini.
+3. **Engine decides what's allowed, a model decides what's good** — `engine/outfit-engine.ts`
+   produces wearable candidates; `services/outfit-stylist.ts` lets Gemini reorder and explain
+   them, and `validatePicks` throws away anything that isn't one of those candidates. Any
+   failure falls back to engine ranking and says so. Chat's `suggest_outfits` calls the plain
+   engine.
 4. **Never fail silently** — route handlers wrap in `withErrorHandling` (structured JSON
    errors), pipeline stages record per-stage failures in `import_jobs`, mutations toast on
    error, `activity_log` records user/AI/system actions.
-5. **Degradation** — background removal returning `null`, AI extraction failing, etc. never
-   block an import; the draft stays reviewable with originals intact.
+5. **Degradation** — a cutout coming back `null`, AI extraction failing, etc. never block an
+   import; the draft stays reviewable with originals intact.
+6. **Boot before serve** — `scripts/boot.ts` (npm `prestart`/`predev`) applies migrations and
+   marks jobs orphaned by the last restart. A failure there aborts the launch rather than
+   starting against a stale schema.
 
 ## Import pipeline
 
-`POST /api/imports` (front + optional back photo) → draft item + job row (status `queued`) →
-a bounded in-process queue (`PSOS_IMPORT_CONCURRENCY`, default 2) runs pipelines FIFO →
-save originals → background removal (cosmetic) → thumbnail → dominant colors (deterministic
-cross-check) → AI metadata via Agent SDK `Read`-tool vision (zod-validated JSON, confidence
-per field, null-over-guess) → `applyInferenceToItem` → status `ready_for_review`. The UI
-polls the job, then the user reviews/edits (edits flip provenance to `user`) and confirms
-(`state: draft → active`).
+`POST /api/imports` (front + optional back photo) → draft item + job row (`queued`) → a
+bounded in-process queue (`PSOS_IMPORT_CONCURRENCY`, default 2) runs pipelines FIFO through
+seven stages: **save → garment_box → image_generation → background_removal → colors →
+ai_metadata → thumbnail**. Only `save` is fatal; every other stage degrades and records why.
+Ends at `ready_for_review`; the UI polls, the user reviews (edits flip provenance to `user`)
+and confirms (`state: draft → active`).
 
-After AI metadata succeeds, the thumbnail is re-cropped tight to the garment using the
-bounding box the same AI call returns (`cropToBox`; non-fatal, falls back to full-frame).
-Full pipeline documentation: `docs/IMPORT_PIPELINE.md`.
+The stage order is load-bearing. Colours run after the cutout so they read the garment and
+not the bedsheet; metadata runs last so it can see the studio shots — but it is sent the
+original photographs too, ranked above them, so a redraw's drift never becomes a recorded
+fact. **Why each stage sits where it does, and the three concurrency limiters:
+`docs/DESIGN.md` §5.**
 
-Reliability notes (learned from real-photo testing, 2026-07-15):
-- **Background removal is currently disabled** (`PSOS_DISABLE_BG_REMOVAL=1`): imgly's ONNX
-  runtime hard-crashes the whole Node process on load (native GLib conflict with sharp's
-  libvips on Windows; uncatchable from JS). Pipeline degrades gracefully — originals become
-  the catalog images. Fix planned: isolate removal in a child process or swap the library.
-- **Orphan recovery**: jobs stuck `queued`/`running` for >3 min are auto-marked failed on the
-  next import-API touch (crash/restart leaves them behind; the in-process queue does not
-  survive a restart). Runs lazily in `imports/pipeline.ts`, not `instrumentation.ts` —
-  Next's instrumentation bundling pass drags imgly's native binary in and breaks the app.
-- **Extraction model is pinned to `claude-sonnet-5`** (Settings → `ai.extractionModel`):
-  the unpinned default misidentified garments while reporting 1.0 confidence; Sonnet was
-  11-for-11 accurate with honest confidence on the first real batch.
+## Cutouts
+
+`imaging/cutout-ladder.ts`: native alpha → flat-key the grey backdrop → **regenerate once
+against a magenta backdrop and key that** → accept the keyed output with a QA warning.
+`cutoutQa` judges every rung. There is no ML segmentation and no native ML runtime in the
+tree. **`docs/DESIGN.md` §4.3.**
+
+## Image regeneration
+
+`POST /api/items/[id]/regenerate` queues a job (front / back / both + optional free-text
+feedback), polled at `GET /api/regen-jobs/[id]`. Always sources from the ORIGINAL crop, never
+from a previous generation. Shares its per-side core with `scripts/regenerate-images.ts`.
+**`docs/DESIGN.md` §6.**
+
+## Outfit suggestions
+
+`POST /api/outfits/suggest` → `services/outfit-stylist.ts`: the engine shortlists 8 wearable
+candidates, Gemini reorders them from ≤12 garment tiles and writes one line each,
+`validatePicks` discards anything that isn't one of those candidates, and any failure falls
+back to engine ranking with the reason shown. **`docs/DESIGN.md` §8.**
 
 ## Chat
 
@@ -75,7 +104,8 @@ Reliability notes (learned from real-photo testing, 2026-07-15):
 in-process MCP server (`mcp__wardrobe__*` tools: search, get item, suggest outfits, log wear,
 set status, save outfit, plan, calendar, stats), resumes via the stored SDK session id, and
 persists the transcript in `chat_sessions` / `chat_messages`. Tool allowlist enforced via
-`canUseTool` — the chat agent has no file or shell access.
+`canUseTool` — the chat agent has no file or shell access. **Needs a Claude Code login, so it
+works on the laptop and not on the VM.**
 
 ## Data lifecycle
 

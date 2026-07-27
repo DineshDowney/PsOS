@@ -1,16 +1,35 @@
 # psos — Status & Plan
 
 Living document: what is planned, what is done, where we are. Update as work lands.
-Last updated: 2026-07-26.
+Last updated: 2026-07-27.
 
 ## Current objective
 
-**Phase C, 2026-07-26.** The app is light mode: white page, garments on paper grounds at 240px
-square tiles filling ~88%, names off the front end, and the wardrobe server-rendered so the
-landing screen no longer opens on a spinner. 15 of 23 items rotate front/back on the grid tile
-and on the item page. **Images can now be regenerated on demand from the item page**, grounded
-in the item's current metadata plus free-text feedback. Awaiting Dinesh's browser judgement on
-the regen flow. Next up is the off-machine backup (highest risk) and the deferred items below.
+**Simplification pass, 2026-07-27 — written and verified locally, not yet deployed.** Four
+changes, all green on 121 tests + typecheck + build:
+
+- **No ML segmentation anywhere.** imgly and onnxruntime are gone (node_modules 1151 MB →
+  577 MB, no native ML runtime, no child process). When flat-keying the grey backdrop fails,
+  the ladder regenerates the garment once against a magenta backdrop and keys that instead —
+  chroma-key for one item on demand rather than for the whole catalog.
+- **Migrations run before the server accepts a request.** `scripts/boot.ts` via npm
+  `prestart`/`predev`; it also recovers jobs orphaned by the last restart. "Table missing
+  right after a restart" is no longer a thing that can happen.
+- **Extraction is Gemini-only, and metadata is anchored to the photographs.** The Claude
+  branch is gone. The metadata call now receives the cropped photos *and* the studio shots,
+  with the photograph declared authoritative on colour, pattern, material and branding —
+  closing the loop where a render's drift became a recorded fact and then grounded the next
+  regeneration.
+- **Outfit suggestions are ranked by a model that can see the clothes.** The engine still
+  decides what is wearable; Gemini reorders its shortlist from garment tiles and writes one
+  line each; `validatePicks` throws away anything that wasn't an engine candidate.
+
+**Unverified against the real wardrobe.** Three things need the VM and a few cents: the
+photo-authoritative metadata (re-extract 2–3 known items and diff the colour fields), the
+first real styled suggestion, and — if a garment ever defeats the grey backdrop — the magenta
+retry, which has no failing case to test against yet.
+
+Then: the off-machine backup, which is still the highest-risk open item.
 
 ## The URL
 
@@ -28,12 +47,13 @@ hits the VM directly.
 |---|---|
 | **Upload → catalog, end to end** | **Proven live 2026-07-25** on the VM over HTTP through the password gate: all 7 stages green in ~40 s, all 9 image roles written, Gemini metadata correct |
 | **Wardrobe regenerated** | Every item, front and back, as a generated transparent cutout. First pass 24/24; re-run after the prompt + halo fixes |
-| Import pipeline | 7 single-purpose stages over one context object (`imports/pipeline.ts`); colours + metadata read the CLEAN generated image, not the raw photo |
+| Import pipeline | 7 single-purpose stages over one context object (`imports/pipeline.ts`); colours read the CUTOUT, metadata reads the cropped PHOTOS **and** the generated shots with the photos ranked authoritative |
+| Boot | `scripts/boot.ts` runs as npm `prestart`/`predev`: migrations + orphaned-job recovery, before the server serves anything. Non-zero exit aborts the launch |
 | Upload | **Non-blocking.** Client queue (`components/upload-queue.tsx`) in `Providers`, one garment at a time, XHR progress. Photos shrink to 3000px/q0.85 before upload (~11.4 MB pair → ~2.4 MB). Survives navigation, **not** a tab close |
 | Upload size ceiling | **64 MB**, one shared constant in `server/lib/upload-limits.ts` feeding both `next.config.ts` and the route guard. Next's 10 MB default *truncated* bodies instead of rejecting them |
 | Laptop data | **None.** `data/`, `models/` and all local backups deleted 2026-07-26 at Dinesh's request. The VM disk is the only copy — see the GCS backup risk below |
 | Prompts | Rewritten. Image = PRESENTATION (one pose/light/framing for every garment) vs IDENTITY (untouchable). Metadata = naming convention + category disambiguation + specific colour names |
-| Cutout quality | Sheared-mask bug fixed (finding 8); bright halo on the dark grid fixed (finding 10) |
+| Cutouts | Deterministic only: native alpha → flat-key the grey backdrop → one magenta-backdrop regeneration → keyed-with-QA-warning. `cutoutQa` judges every rung |
 | Gemini rate limits | Same-model backoff 20/45/90s honouring `Retry-After`, plus 5s batch pacing and `--missing` to retry a partial run |
 | App on VM | **`https://psos.tail620d1e.ts.net`** via Tailscale Funnel |
 | Password gate | **ACTIVE.** Root-owned `/etc/psos.env` via `EnvironmentFile`; no rebuild needed (verified). Rotate with `psos-set-password` on the VM |
@@ -43,7 +63,9 @@ hits the VM directly.
 | External IP | **Ephemeral** (`35.244.15.32` today, changes on stop/start — nothing depends on it). Static `34.100.219.116` released 2026-07-26 |
 | VM shutdown | 60-min autostop at boot as backstop, plus a 30-min keepalive check (`psos-keepalive.timer`) that cancels it while there is work or a human |
 | VM config in git | `deploy/vm/` — units, keepalive script, install steps |
-| BiRefNet segmentation | **Dropped** as a direction; opt-in via `PSOS_BG_ENGINE=birefnet`, imgly is the default |
+| ML segmentation | **Gone.** No imgly, no onnxruntime, no BiRefNet, no child process. `node_modules` 1151 MB → 577 MB |
+| AI split | Gemini does everything that looks at a garment (metadata, product shots, outfit ranking). Claude does chat only — so **chat works on the laptop and not on the VM** |
+| Outfit suggestions | Engine shortlists 8 wearable candidates → Gemini reorders from ≤12 garment tiles and writes one line each → `validatePicks` discards anything not on the shortlist → any failure falls back to engine ranking, reason shown on the page |
 | Editorial UI (wardrobe/item/import) | Shipped `5babeec` |
 | **Theme** | **Light.** White page `#fdfdfc`, paper garment grounds `#f4f1ea`, burgundy accent `#6e302e`, ink `#191817`. All 9 screens via semantic tokens in `globals.css` |
 | **Garment separation** | `.garment-shadow` — warm drop-shadow under transparent cutouts, deepening on hover. Replaces `.garment-glow`, which existed for the same reason on near-black |
@@ -290,50 +312,69 @@ See `deploy/vm/README.md` for the units, the install steps and the Tailscale got
 
 ## Backlog — next phase starts here
 
-Highest value first:
+### Blocking: verify today's changes on the VM
 
-0. **Off-machine backup (GCS bucket).** Highest *risk* item, not the highest value: deleting the
-   laptop copies on 2026-07-26 left **one copy of the wardrobe, on the VM's disk**. `gsutil rsync`
-   from the VM to a bucket, ~160 MB, pennies a month, laptop never touches it. Settings → Export
-   does not cover this — it downloads to the laptop, which is what Dinesh does not want.
-0.5. **Photograph the backs of 8 items** so they can rotate like the other 15: `593c47ae`,
+Deploy, then three checks that cost a few cents between them. Until these pass, the four
+changes above are "written and tested", not "working".
+
+- Re-extract 2–3 known items and diff the colour/pattern fields against what's stored — does
+  ranking the photograph above the render actually change the answer?
+- One styled outfit suggestion. Is the ordering better than the engine's, and is the one-line
+  reason about *those clothes* rather than generic filler?
+- Confirm `psos.service` still starts (the unit runs `npm start`, which now runs `prestart`
+  first — a missing `tsx` on the VM would abort the launch, not degrade it).
+
+### Then, highest value first
+
+1. **Off-machine backup (GCS bucket).** Highest *risk* item in the system: there is **one copy
+   of the wardrobe, on the VM's disk**. `gsutil rsync` from the VM to a bucket, ~160 MB, pennies
+   a month, laptop never touches it. Settings → Export does not cover this — it downloads to the
+   laptop, which is what Dinesh does not want.
+2. **Bulk import UI** — `<input multiple>` → one photo = one garment → N POSTs. Backend needs no
+   changes. **Moved ahead of cataloguing on purpose:** it exists to make item 3 bearable, and
+   doing 40 garments one at a time through the current form first would waste the effort.
+3. **Catalog the rest of the wardrobe, front-only** *(Dinesh)*. The pipeline is ready and
+   one-shot per garment; photo-taking work, not engineering. Front-only halves the image calls
+   and the quota stalling.
+4. **Photograph the backs of 8 items** *(Dinesh)* so they rotate like the other 15: `593c47ae`,
    `8d05cc43`, Coral Heather Athletic T-Shirt, Grey Jockey Boxer Trunks, Grey Levi's Boxer
    Briefs, Grey Pinstriped Sweat Shorts, Kiprun Grey Sports T-Shirt, Maroon Jockey Boxer Briefs.
-   Imported front-only originally; nothing to generate a back from without a photo. Photography,
-   not engineering.
-1. **Slow image loads** (Dinesh, 2026-07-26 — parked by him pending measurement). I diagnosed
-   the always-mounted back `<img>` in `ItemCard` double-fetching on the wardrobe grid, but never
-   measured it; the other candidate is simply that 23 transparent PNGs is a lot of bytes vs
-   JPEG. **Measure the actual payload and waterfall before writing any fix** — two "silent
-   failures" this session turned out to be my own grep escaping, and the same discipline applies.
-2. **Refactor `scripts/regenerate-images.ts` onto `regenerateSide`** (`server/imaging/regenerate.ts`).
-   It carries a real latent bug — it only refreshes the FRONT tile even when regenerating the
-   back, the same bug already fixed in `rekey-images.ts` and the pipeline. Deferred because it is
-   scope nobody asked for and cannot be exercised without spending money.
-3. **Server-render the remaining 8 screens.** Phase C did `/wardrobe` only, by Dinesh's scoping,
-   and it is the pattern to copy: `page.tsx` server shell reading the service directly + a client
-   island, `force-dynamic`, `initialData` seeding. Until this lands, every screen except the
-   landing one opens on a spinner — and the cross-page fade is fading *into* those spinners.
-4. **Housekeeping from the contact sheet** (finding 16): un-archive one Indigo Block-Print
-   Kurta, name + categorise the two unnamed items, resolve or discard the stuck draft, and move
-   `Maroon Jockey Boxer Briefs` off `accessory`.
-5. **Catalog the rest of the wardrobe, front-only.** The pipeline is ready and one-shot per
-   garment; this is photo-taking work now, not engineering work. Front-only halves the image
-   calls and the quota stalling (finding 18).
-6. **Bulk import UI** — `<input multiple>` → one photo = one garment → N POSTs. Backend needs no
-   changes. Cut from Phase B by Dinesh; still worth having before a 40-garment batch.
-7. **Phone-triggered VM wake**: a tiny always-on endpoint (Cloud Function/Run) that calls
-   `instances.start`, so hitting a URL from the phone boots the VM.
-8. Retry for partially-failed import jobs (a stage failed but the job reached
-   `ready_for_review` — currently only wholly-failed jobs can retry).
-9. Modeled editorial shots (needs a reference photo of Dinesh — deferred by choice).
-10. **Chroma-key backdrop**, if a genuinely off-white garment ever fails (finding 17). Not needed
-   for the current wardrobe; only pay the prompt change + regeneration when something actually
-   breaks.
+   Imported front-only; nothing to generate a back from without a photo.
+5. **Slow image loads** — *parked by Dinesh pending measurement.* Two plausible causes (the
+   always-mounted back `<img>` in `ItemCard` double-fetching, and 23 transparent PNGs simply
+   being a lot of bytes) and no measurement distinguishing them. **Measure the payload and
+   waterfall before writing any fix.**
+6. **Server-render the remaining 8 screens.** `/wardrobe` is the pattern: `page.tsx` server
+   shell reading the service directly + a client island, `force-dynamic`, `initialData` seeding.
+   Until this lands, every screen except the landing one opens on a spinner — and the cross-page
+   fade is fading *into* those spinners.
+7. **Refactor `scripts/regenerate-images.ts` onto `regenerateSide`**. It carries a real latent
+   bug — it only refreshes the FRONT tile even when regenerating the back, already fixed twice
+   in sibling code. Cannot be exercised without spending money.
+8. **Chat on the VM.** Chat is Claude-only and the VM has no Claude login, so the screen cannot
+   answer on the machine that actually holds the wardrobe. The fix is function calling in
+   `vertex-client.ts` (~50 lines) plus a tool loop in `chat.ts` (~80); the 10 wardrobe tools
+   survive as-is. Unknown: whether `streamGenerateContent` fits the current client cleanly, or
+   whether chat loses token-by-token streaming. Also turns chat from free (rides the Claude Code
+   login) into billed per message.
 
-Considered and **rejected**: paying for a domain (no free path exists via GCP — see DECISIONS);
-tailnet-only `tailscale serve` (more secure, but Dinesh wants the URL to work without a
-Tailscale client).
+### Not now
+
+- **Retry for partially-failed import jobs** *(Dinesh: leave)* — a stage failed but the job still
+  reached `ready_for_review`; only wholly-failed jobs can retry today.
+- **Catalog housekeeping** *(Dinesh: leave)* — un-archive one Indigo Block-Print Kurta, name and
+  categorise two unnamed items, resolve the stuck draft, move `Maroon Jockey Boxer Briefs` off
+  `accessory`. All doable in the UI in a couple of minutes.
+- **Modeled editorial shots** — needs a reference photo of Dinesh, and would regenerate every
+  garment (~$0.04 each). The hard part is not the money, it is that reproducing a *person*
+  consistently across 23 images is a much harder identity problem than reproducing a t-shirt.
+
+Considered and **rejected**: ML segmentation as a cutout fallback (574 MB of native runtimes to
+produce the crumpled picture the redraw exists to avoid — the magenta retry fixes the cause);
+a catalog-wide chroma-key backdrop (the retry does it per item, only when needed); paying for a
+domain or any GCP-native ingress (see DECISIONS); tailnet-only `tailscale serve` (more secure,
+but Dinesh wants the URL to work without a Tailscale client); a Cloud Function VM waker (the
+Google Cloud phone app already does it).
 
 **Superseded:** "idle-based VM shutdown — rejected 2026-07-25" no longer holds. See the
 2026-07-26 decision entry: the flag tracks work and interaction rather than traffic, so the

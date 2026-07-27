@@ -1,13 +1,16 @@
 import sharp from "sharp";
 
 /**
- * Deterministic quality gate for background-removal output. imgly can smear
- * low-contrast backgrounds (dark garment on dark bedsheet) into translucent
- * halos instead of removing them; a bad cutout is worse than no cutout, so
- * callers only replace the crop when this returns ok.
+ * Deterministic quality gate for cutouts, and the judge at every rung of the
+ * cutout ladder (cutout-ladder.ts). A bad cutout is worse than no cutout, so a
+ * candidate only becomes the tile when this returns ok.
  *
- * Heuristics on the alpha channel (input is a bbox crop with ~8% padding, so
- * a clean cutout has transparent margins and a solid garment in the middle):
+ * Being the single definition of "good" is what lets the ladder skip a separate
+ * "did the model emit real transparency?" detector: an opaque image fails the
+ * corner and border checks below by definition.
+ *
+ * Heuristics on the alpha channel (input is framed with a margin on all four
+ * sides, so a clean cutout has transparent edges and a solid garment centred):
  *   1. all four corner patches are essentially transparent
  *   2. the 1-pixel-band border is mostly transparent
  *   3. the opaque area is a sane fraction of the image (not empty, not a

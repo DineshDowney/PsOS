@@ -106,11 +106,30 @@ export interface RegenContext {
   facts?: string[];
   /** Dinesh's own words on what was wrong last time. Empty/omitted = no section. */
   feedback?: string;
+  /**
+   * Rung 3 of the cutout ladder (cutout-ladder.ts): the light-grey backdrop from
+   * the previous attempt could not be separated from the garment — which happens
+   * when the garment is itself near-white. Swap the fallback backdrop for a
+   * colour no garment can match, and key that instead. This is the chroma-key
+   * backdrop applied to ONE item on demand rather than to the whole catalog.
+   */
+  contrastBackdrop?: boolean;
 }
+
+/** Overrides the `#f2f2f0` fallback in PROMPT_BASE. See RegenContext.contrastBackdrop. */
+const CONTRAST_BACKDROP = `BACKDROP OVERRIDE FOR THIS ATTEMPT — replaces the light-grey fallback above
+The previous attempt's background could not be separated from the garment. If you cannot emit
+a real alpha channel, fill the background with ONE perfectly flat PURE MAGENTA (#FF00FF)
+instead of light grey. Magenta appears nowhere in this garment, which is the entire point: it
+must be uniform edge to edge — no gradient, no shadow, no seam, no border — and no magenta may
+appear anywhere on the garment itself. Everything else above is unchanged.`;
 
 /** Exported for image-generation.test.ts. */
 export function buildPrompt(context?: RegenContext): string {
   let prompt = PROMPT_BASE;
+  if (context?.contrastBackdrop) {
+    prompt += `\n\n${CONTRAST_BACKDROP}`;
+  }
   if (context?.facts?.length) {
     prompt += `\n\nKNOWN FACTS ABOUT THIS GARMENT (from cataloguing — trust these over your own
 read of the photo where they disagree)

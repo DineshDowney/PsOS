@@ -187,6 +187,20 @@ export interface OutfitSuggestion {
   score: number;
 }
 
+/** An engine suggestion after the stylist has (or has not) judged it. */
+export interface StyledSuggestion extends OutfitSuggestion {
+  /** One line on why it works. Null when the engine ranked alone. */
+  reason: string | null;
+}
+
+export interface StylistResult {
+  suggestions: StyledSuggestion[];
+  /** Who chose the order — "engine" means the model was unavailable or unusable. */
+  rankedBy: "model" | "engine";
+  /** Why we fell back, when we did. Shown to the user; never silent. */
+  fallbackReason: string | null;
+}
+
 export interface WearEvent {
   id: string;
   wornOn: string;

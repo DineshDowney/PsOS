@@ -3,6 +3,192 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-27 — Simplification pass: no ML segmentation, eager migrations, Gemini-only extraction, model-ranked outfits
+
+Dinesh reviewed the design doc and asked, of each subsystem, whether it was actually earning
+its complexity. Four answers came out of it. Written and verified locally (121 tests,
+typecheck, build, `prestart` hook); **not yet run against the real wardrobe**.
+
+### imgly and BiRefNet deleted; the cutout ladder loses its segmentation rung
+
+BiRefNet was unambiguous: gated behind an env var nothing sets, requiring `models/birefnet.onnx`
+which exists on no machine, documented as crashing on the VM. It could not run.
+
+imgly was the real question, and the accounting settled it. `@imgly/background-removal-node`
+declares `onnxruntime-node` as its own dependency and ships nested copies of both it and
+sharp — **574 MB of the 1151 MB `node_modules`**, for a rung that only fires when flat-keying
+the grey backdrop we asked for has already failed. The failure it rescues is a garment close
+in tone to that backdrop, and matting is the wrong tool for it: segmentation preserves the
+crumples and bedsheet shadows that the redraw exists to remove.
+
+Replaced by rung 3 = **regenerate once against a pure-magenta backdrop and key that**. Same
+flood fill, no code change to `flat-key.ts`, and it fixes the cause rather than matting around
+it. This is the chroma-key backdrop that had been sitting in the backlog since 2026-07-26,
+applied to one item on demand instead of to the whole catalog — so it no longer implies a
+catalog-wide regeneration. Costs $0.04 and ~15s, in the same slot where imgly cost 10-20s of
+CPU. Guard: if the retry also fails QA, the ladder falls back to the *original* generation's
+keyed output, so a retry can add ground but never lose it.
+
+What we gave up: the no-Gemini path. `stageBackgroundRemoval` used to segment the crop when
+Gemini was unconfigured; now there is simply no cutout and the tile stays opaque, with the
+stage saying so. That is the honest degradation — the alternative was a bad matte of a
+crumpled flat-lay, which is the thing §4.1 argues is not worth having.
+
+Also gone with them: a child process, the `serverExternalPackages` entry, `PSOS_BG_ENGINE`,
+`PSOS_DISABLE_BG_REMOVAL`, `PSOS_BG_DEBUG`, and `scripts/backfill-images.ts` (a spent one-shot
+whose cutout step was imgly).
+
+**Not yet exercised.** Rung 3 has no failing case in the current wardrobe to test against. It
+is covered by unit tests with synthetic near-white garments, which is not the same thing.
+
+### Migrations and orphan recovery moved to a pre-start process
+
+`getDb()` is lazy, so migrations ran on the first request that touched the DB. A freshly
+restarted server therefore looked half-deployed — schema correct, new table absent until
+somebody loaded a page — which is indistinguishable from a failed migration.
+
+`scripts/boot.ts`, wired as npm's `prestart` and `predev`. A **separate process** rather than
+Next's `instrumentation.ts`: no bundler involvement at all, and a non-zero exit aborts the
+launch instead of starting a server against a stale schema.
+
+Worth recording because the earlier framing was wrong: the lazy placement was blamed on
+imgly's native binary poisoning the `instrumentation.ts` bundling pass, and removing imgly was
+expected to "unblock" it. It did — but `instrumentation.ts` was never the only route. A plain
+prestart script would have worked the whole time and is the better answer anyway. The
+dependency and the workaround were less coupled than the comments claimed.
+
+Orphan recovery moved with it, and is strictly better there: a process that runs *before* the
+server can only be looking at the previous run's wreckage, so there is no live job it could
+mistake for an orphan. The staleness cutoff stays as a second guard for manual runs.
+
+### Extraction is Gemini-only, and metadata is anchored to the photographs
+
+The Claude branch existed because the laptop had a Claude login and no Gemini credentials
+while the VM had the reverse. Nothing imports on the laptop any more, so it was a second way
+to do one job. Deleted, along with `extractionEngine()`, the path-vs-inline `imageRef` split,
+and the `ai.extractionEngine` setting.
+
+The more consequential half is Dinesh's: metadata was read off the **generated** shots, which
+made a closed loop with no correction. A generation shifts a colour → the shift is stored as
+metadata → `itemFacts` grounds the *next* generation in that metadata → each retry drifts
+further from the real garment while looking more self-consistent.
+
+His proposed fix was to move `ai_metadata` before `image_generation`. Rejected on a cost he
+had not seen: `ctx.dominant` is computed from the **cutout**, precisely so it reports garment
+pixels rather than half a bedsheet, and that cutout does not exist yet at that point. The
+reorder would either lose the colour cross-check or reintroduce a bug fixed on 2026-07-25.
+
+Kept the order, changed the inputs instead: the call now receives the cropped photographs
+*and* the studio shots, in that order, with the prompt stating that the photograph wins any
+disagreement about colour, shade, pattern, print placement, material or branding, and the
+render is only for silhouette, cut, construction and text a crease had obscured. One extra
+inline image, same number of calls, no reorder, cross-check intact.
+
+[Guessing] how reliably the model honours "image 1 is authoritative" — that is the thing the
+VM test has to answer. If it does not hold, the strict reorder is the fallback and we pay for
+it by losing the dominant-colour cross-check.
+
+Knock-on: the settings screen offered Claude model ids for the extraction setting, where a
+`claude`-prefixed value is filtered out before it can reach Vertex. A control that looked like
+it worked and did nothing. Split into two lists, Claude for chat and Gemini for extraction.
+
+### Outfit suggestions: the engine decides what is allowed, a model decides what is good
+
+Dinesh asked to revisit "engine over LLM" on the grounds that Gemini is cheap. The better
+argument is one he did not make: **the engine has never seen the clothes.** `outfitColorScore`
+applies a hue wheel to the *string* in `primaryColor`. And the weights (0.40 colour / 0.25
+formality / 0.20 freshness / 0.15 rotation) were chosen by judgement, never validated against
+his taste — DECISIONS said so on 2026-07-15. Determinism is only worth having when the
+function is right.
+
+So the rule was re-scoped rather than dropped. `engine/outfit-engine.ts` keeps everything that
+must be exactly right and that a model will get wrong — laundry state, slot completeness,
+freshness, rotation, repeat penalty. `services/outfit-stylist.ts` sends the engine's shortlist
+of 8 candidates to Gemini as ≤12 garment **tiles** plus metadata, and gets back an ordering
+with one line of reasoning each.
+
+The safety is structural, not prompted: the model's entire vocabulary is candidate letters
+`"A".."H"`, so `validatePicks` can reject anything that was not on the shortlist. The worst a
+hallucinating model can produce is a bad *order* — it cannot invent a garment, pull one from
+the laundry, or put two pairs of shoes in an outfit. Any failure at all (no credentials, model
+error, unparseable JSON, zero valid picks) falls back to engine ranking and **shows the reason
+on the page**, because a degraded answer that looks identical to a good one is the real hazard.
+
+Numbers: Dinesh's first instinct on the shortlist size was that 20 was too many, and he was
+right — but the framing was worse than the number. "20 candidate outfits with tile images" is
+60+ images. The unit is items, not outfits. `SHORTLIST = 8`, `MAX_TILES = 12`, `TILE_PX = 256`,
+all named constants. `fitToTileBudget` trims by dropping whole candidates, never individual
+images, so the prompt's numbering can never disagree with what was attached.
+
+Costs, accepted: instant-and-free becomes a few seconds and a fraction of a cent, and the
+order is no longer reproducible. Fine for a button press, not for a page load — so it is a
+button press. Chat's `suggest_outfits` deliberately still calls the plain engine; Claude is
+already the taste layer there.
+
+### Deferred, with reasons
+
+**Chat stays on Claude.** Dinesh's call. It means the Agent SDK (69 MB) stays, and that chat
+still does not work on the VM — the only machine with the wardrobe on it. Porting needs
+function calling in `vertex-client.ts` plus a tool loop; the open risk is whether
+`streamGenerateContent` fits the current client without losing token-by-token streaming, and
+that it turns chat from free into billed per message.
+
+**Function calling deferred with it.** It was only ever needed for chat tools — the stylist
+uses plain structured output (`responseMimeType: "application/json"`), which the client
+already had.
+
+## 2026-07-27 — GCP-native ingress priced and rejected; Funnel stays, vm-start just gets honest
+Dinesh hit the app while the VM was asleep and concluded the server had failed to start. It
+had not: `psos.service` is `enabled` and came up in 2.1s with 0 restarts on that boot, Funnel
+already serving. The VM was simply off, and `vm-start.cmd` opened the browser the instant the
+compute API returned — ~60s before anything could answer. **The defect was the script's
+messaging, not its behaviour**, which is worth noting because two larger designs were nearly
+built on top of the misdiagnosis.
+
+He then asked to drop Tailscale for something GCP-native, on the grounds that a second vendor
+adds complexity down the line. Priced properly, the motive **inverts**:
+
+| | Cost/mo | Inbound ports | Moving parts |
+|---|---|---|---|
+| **Tailscale Funnel** (kept) | **$0** | **none** | one daemon, one command |
+| Domain + Cloud DNS + Caddy | ~$1 | 80 + 443 open | registrar, DNS zone, boot-time DDNS updater, Caddy unit |
+| GCP External ALB (+ IAP) | **$18.25** | none | 6 GCP resources |
+
+Three findings settle it. The ALB forwarding rule is **$18.25/mo minimum and bills whether or
+not the VM is running** — more for the front door than the house, to reach a machine that is
+off ~20h/day. **Google-managed certs cannot attach to a bare VM** [Certain]: they only go
+ACTIVE bound to a load balancer's target proxy, so "GCP-native HTTPS without an LB" does not
+exist for Compute Engine. And domains are now cheap (~$10.44/yr at Cloudflare's at-cost
+pricing), so the "no free-domain path" blocker recorded on 2026-07-26 is no longer what binds
+— parts count and monthly cost are.
+
+Every GCP-native replacement is *more* machinery and *more* money than the thing it replaces.
+Tailscale remains the low-complexity option. Decision: **park the ingress entirely** — no
+domain, no tailnet rename, no Caddy, no load balancer. The reusable lesson is that "reduce
+complexity" was a hypothesis, and it did not survive being costed.
+
+Mobile wake moves **out of the codebase**: the Google Cloud app does start/stop on Compute
+Engine instances. Nothing to deploy, nothing to secure, no public trigger.
+
+Also rejected, and not to be reopened without new information:
+- **A Cloud Run waker endpoint** (URL → starts the VM → polls → redirects). Sound design, and
+  Cloud Run/Build/Artifact Registry are already enabled with zero services — Dinesh vetoed it
+  as more infrastructure than the problem deserves.
+- **SSH-polling readiness from `vm-start.cmd`**. Works, and I verified the mechanics live
+  (passwordless `sudo -n`, greppable funnel status, `localhost:3000/login` → 200). But the
+  VM's external IP churns every boot, so PuTTY prompts for the host key each time and running
+  it unattended means blind-accepting a new key on every start. A real security trade for a
+  cosmetic gain.
+- **Migrating the app to Cloud Run.** [Certain] architectural mismatch: the import and regen
+  pipelines are in-process job queues with 1-wide limiters and 15–40s of background work, and
+  Cloud Run reclaims CPU when a request ends. The whole background-job design would have to be
+  rebuilt on Cloud Tasks, and SQLite would have to leave local disk.
+
+What actually shipped: `scripts/vm-start.cmd` now checks `instances describe` first and takes
+one of two branches — already `RUNNING` says so and opens the app, otherwise it starts the VM
+and states plainly that **the first load will fail and to refresh after a minute**. The old
+wording buried a "~60-90s" note that the browser's own error page immediately overwrote.
+
 ## 2026-07-26 — On-demand image regeneration, grounded in metadata and feedback
 Dinesh, called top priority: regenerate an item's studio shots from the item page — pick
 front/back/both, say what was wrong last time, and have the regen pick up whatever metadata

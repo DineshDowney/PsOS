@@ -27,6 +27,19 @@ export interface TextPart {
 }
 export type Part = TextPart | InlinePart;
 
+/**
+ * Text/vision model candidates, cheapest-capable first. Verified against
+ * `listModels()` on 2026-07-25 (the 2.x ids are retired). Model ids move faster
+ * than this code, so callers pass a LIST and a 404 on one candidate is expected
+ * rather than an error. Shared by every text caller so they cannot drift apart.
+ */
+export const DEFAULT_TEXT_MODELS = [
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-2.5-flash-lite",
+];
+
 export interface GenerateOptions {
   /** Tried in order; first one that responds wins. */
   models: string[];

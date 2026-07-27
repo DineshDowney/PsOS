@@ -12,9 +12,8 @@ import { createDraftItem, applyInferenceToItem, getItem } from "@/server/service
 import { itemImageDir, relativeImagePath, resolveImagePath, saveBuffer, sha256Of } from "@/server/imaging/storage";
 import { normalizeUpload, makeThumbnail, cropToBox } from "@/server/imaging/thumbnails";
 import { dominantColors, type DominantColor } from "@/server/imaging/dominant-colors";
-import { removeBackground } from "@/server/imaging/background-removal";
-import { cutoutQa } from "@/server/imaging/cutout-qa";
 import { cutoutFromGenerated, type Cutout } from "@/server/imaging/cutout-ladder";
+import { contrastRetry } from "@/server/imaging/regenerate";
 import { dhash } from "@/server/imaging/phash";
 import { extractItemMetadata, extractBoundingBox } from "@/server/ai/extraction";
 import { generateProductShot } from "@/server/ai/image-generation";
@@ -30,12 +29,14 @@ import type { BBox, ImageRole, ImportJob, ImportStage, StageInfo } from "@/share
  *   image_generation redraw each side as a clean studio product shot (Gemini)
  *   background_removal transparent cutouts (ladder in cutout-ladder.ts)
  *   colors          dominant colours, read off the CUTOUT so they're garment-only
- *   ai_metadata     fields + tags, read off the STUDIO SHOTS when available
+ *   ai_metadata     fields + tags, from the PHOTOS and the studio shots together
  *   thumbnail       final catalog tile from the best image we ended up with
  *
- * The order is load-bearing and not the obvious one: colours and metadata come
- * last because they are much better when read from a clean, isolated garment
- * than from a crumpled flat-lay on a bedsheet.
+ * The order is load-bearing and not the obvious one. Colours come after the
+ * cutout because `dominantColors` ignores transparent pixels, so it reports the
+ * garment rather than half a bedsheet. Metadata comes last so it can see the
+ * studio shots — but it is sent the ORIGINAL photographs too, ranked above them,
+ * so a redraw's drift cannot become a recorded fact (ai/extraction.ts).
  *
  * Progress is persisted per stage in import_jobs, so the UI can poll and a
  * killed dev server leaves an inspectable (retryable) record, not a mystery.
@@ -141,9 +142,9 @@ export interface StartImportInput {
 /**
  * Bounded import queue. Uploads enqueue instantly (status "queued") and a
  * fixed number of pipelines run concurrently — a burst of uploads lines up
- * instead of stampeding the machine with parallel ONNX/Agent-SDK work.
+ * instead of stampeding the machine with parallel image-model work.
  * In-process only: a restart loses the waiting queue, which is why
- * recoverOrphanedJobs() runs at boot.
+ * recoverOrphanedJobs() runs at boot (scripts/boot.ts).
  */
 const IMPORT_CONCURRENCY = (() => {
   const n = Number(process.env.PSOS_IMPORT_CONCURRENCY ?? 2);
@@ -152,7 +153,6 @@ const IMPORT_CONCURRENCY = (() => {
 const runLimited = createLimiter(IMPORT_CONCURRENCY);
 
 export function startImport(input: StartImportInput): ImportJob {
-  ensureOrphanRecovery();
   const item = createDraftItem();
   const jobId = newId();
   const ts = nowIso();
@@ -235,25 +235,14 @@ export function retryImport(jobId: string): ImportJob {
  * queue survives neither). Mark it failed with an honest reason — originals
  * (if the save stage finished) are on disk, so the item can be re-imported.
  *
- * Runs lazily on first import-API use per process rather than in a Next.js
- * instrumentation hook: instrumentation's separate bundling pass drags
- * imgly's native binary into the bundle and 500s the whole route graph
- * (observed 2026-07-15). The staleness cutoff (not process start time)
- * guards active jobs: a live pipeline updates its row every stage
- * transition, far more often than the cutoff.
+ * Called from `scripts/boot.ts`, which runs as npm's prestart/predev hook —
+ * a separate process, before the server accepts anything, so everything it
+ * finds is genuinely the previous process's wreckage. The staleness cutoff
+ * stays as a second guard for anyone who runs the script by hand while a
+ * server is up: a live pipeline updates its row on every stage transition,
+ * far more often than the cutoff.
  */
 const ORPHAN_STALE_MS = 3 * 60 * 1000;
-let orphanRecoveryDone = false;
-
-function ensureOrphanRecovery(): void {
-  if (orphanRecoveryDone) return;
-  orphanRecoveryDone = true;
-  try {
-    recoverOrphanedJobs();
-  } catch (err) {
-    console.error("[psos] orphaned-job recovery failed:", err);
-  }
-}
 
 export function recoverOrphanedJobs(): number {
   const db = getDb();
@@ -309,6 +298,8 @@ interface Ctx {
   boxBack: BBox | null;
   cropFront: Buffer | null;
   cropBack: Buffer | null;
+  cropFrontPath: string | null;
+  cropBackPath: string | null;
   genFront: Buffer | null;
   genBack: Buffer | null;
   genFrontPath: string | null;
@@ -405,17 +396,17 @@ async function stageGarmentBox(ctx: Ctx, report: Report): Promise<void> {
     if (ctx.boxFront) {
       ctx.cropFront = await cropToBox(ctx.front, ctx.boxFront);
       if (ctx.cropFront) {
-        const p = path.join(ctx.dir, "front_cropped.jpg");
-        await saveBuffer(p, ctx.cropFront);
-        addImageRow(ctx.itemId, "front_cropped", p, ctx.cropFront);
+        ctx.cropFrontPath = path.join(ctx.dir, "front_cropped.jpg");
+        await saveBuffer(ctx.cropFrontPath, ctx.cropFront);
+        addImageRow(ctx.itemId, "front_cropped", ctx.cropFrontPath, ctx.cropFront);
       }
     }
     if (ctx.back && ctx.boxBack) {
       ctx.cropBack = await cropToBox(ctx.back, ctx.boxBack);
       if (ctx.cropBack) {
-        const p = path.join(ctx.dir, "back_cropped.jpg");
-        await saveBuffer(p, ctx.cropBack);
-        addImageRow(ctx.itemId, "back_cropped", p, ctx.cropBack);
+        ctx.cropBackPath = path.join(ctx.dir, "back_cropped.jpg");
+        await saveBuffer(ctx.cropBackPath, ctx.cropBack);
+        addImageRow(ctx.itemId, "back_cropped", ctx.cropBackPath, ctx.cropBack);
       }
     }
 
@@ -482,8 +473,13 @@ async function stageImageGeneration(ctx: Ctx, report: Report): Promise<void> {
 }
 
 /**
- * Transparent cutouts. From the studio shot via the shared ladder when we have
- * one; otherwise segment the crop, which is the old (worse) path.
+ * Transparent cutouts from the studio shots, via the shared ladder.
+ *
+ * No generated shot means no cutout. ML segmentation of the raw crop used to
+ * fill that gap and was removed on 2026-07-27: it preserved every crumple and
+ * bedsheet shadow that the redraw exists to eliminate, and cost 574 MB of native
+ * dependencies plus a child process to survive a libvips/ONNX conflict. The
+ * honest degradation is an opaque tile from the best photo we have.
  */
 async function stageBackgroundRemoval(ctx: Ctx, report: Report): Promise<void> {
   report.mark("background_removal", { status: "running" });
@@ -492,19 +488,15 @@ async function stageBackgroundRemoval(ctx: Ctx, report: Report): Promise<void> {
 
     for (const side of ["front", "back"] as const) {
       const generated = side === "front" ? ctx.genFront : ctx.genBack;
-      let cutout: Cutout | null = null;
+      if (!generated) continue;
 
-      if (generated) {
-        cutout = await cutoutFromGenerated(generated);
-      } else {
-        const crop = side === "front" ? ctx.cropFront : ctx.cropBack;
-        const seg = crop ? await removeBackground(crop) : null;
-        if (seg) {
-          const qa = await cutoutQa(seg.png);
-          if (qa.ok) cutout = { png: seg.png, how: "segmentation", clean: true };
-          else if (side === "front") note = `Cutout rejected by quality check (${qa.reason})`;
-        }
-      }
+      // The ladder's rung 3 regenerates against a contrasting backdrop, so it
+      // needs the same source this side was generated from.
+      const source = side === "front" ? (ctx.cropFront ?? ctx.front) : (ctx.cropBack ?? ctx.back);
+      const cutout: Cutout | null = await cutoutFromGenerated(
+        generated,
+        source ? contrastRetry(ctx.itemId, source, "image/jpeg") : undefined,
+      );
       if (!cutout) continue;
 
       const p = path.join(ctx.dir, `transparent_${side}.png`);
@@ -547,30 +539,32 @@ async function stageColors(ctx: Ctx, report: Report): Promise<void> {
 }
 
 /**
- * AI metadata, read off the studio shots when we have them — a clean, isolated
- * garment yields better colour and pattern calls than a crumpled photo.
+ * AI metadata. Sends the PHOTOGRAPHS (cropped where we have a crop) and the
+ * studio shots together, with the prompt ranking the photographs above the
+ * renders on anything to do with identity — see `describeImages` in
+ * ai/extraction.ts for why that ordering is load-bearing.
+ *
  * Writes only AI-owned fields (provenance protects user edits).
  */
 async function stageAiMetadata(ctx: Ctx, report: Report): Promise<void> {
   report.mark("ai_metadata", { status: "running" });
   try {
-    const generated = [ctx.genFrontPath, ctx.genBackPath].filter((p): p is string => p !== null);
-    const useGenerated = generated.length > 0;
+    // Prefer the crops: same photograph, minus the bedsheet and the tripod.
+    const back = ctx.cropBackPath ?? ctx.backPath;
+    const photoPaths = [ctx.cropFrontPath ?? ctx.frontPath, ...(back ? [back] : [])];
     const inference = await extractItemMetadata({
-      imagePaths: useGenerated
-        ? generated
-        : [ctx.frontPath, ...(ctx.backPath ? [ctx.backPath] : [])],
+      photoPaths,
+      productShotPaths: [ctx.genFrontPath, ctx.genBackPath].filter((p): p is string => p !== null),
       dominant: ctx.dominant,
-      sourceKind: useGenerated ? "product-shot" : "photo",
     });
 
-    // ai_raw stores the whole inference, and the product-shot prompt does not
-    // ask for boxes — so fold in the boxes we actually found, or backfills lose
-    // them and re-pay for another AI call.
+    // ai_raw stores the whole inference, and the metadata call does not ask for
+    // boxes — so fold in the boxes `garment_box` already found, or backfills
+    // lose them and re-pay for another AI call.
     applyInferenceToItem(ctx.itemId, {
       ...inference,
-      bbox: inference.bbox ?? ctx.boxFront,
-      bboxBack: inference.bboxBack ?? ctx.boxBack,
+      bbox: ctx.boxFront,
+      bboxBack: ctx.boxBack,
     });
     report.mark("ai_metadata", { status: "done" });
   } catch (err) {
@@ -631,6 +625,8 @@ async function runPipeline(jobId: string, itemId: string, input: StartImportInpu
     boxBack: null,
     cropFront: null,
     cropBack: null,
+    cropFrontPath: null,
+    cropBackPath: null,
     genFront: null,
     genBack: null,
     genFrontPath: null,
@@ -674,7 +670,6 @@ function mapJob(row: typeof schema.importJobs.$inferSelect, withItem = true): Im
 }
 
 export function getImportJob(id: string): ImportJob {
-  ensureOrphanRecovery();
   const row = getDb().select().from(schema.importJobs).where(eq(schema.importJobs.id, id)).get();
   if (!row) throw notFound("Import job", id);
   return mapJob(row);
@@ -682,7 +677,6 @@ export function getImportJob(id: string): ImportJob {
 
 /** Jobs whose item is still a draft (pending review or in flight). */
 export function listOpenImportJobs(): ImportJob[] {
-  ensureOrphanRecovery();
   const db = getDb();
   const drafts = db
     .select({ id: schema.items.id })

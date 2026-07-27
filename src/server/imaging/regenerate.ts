@@ -34,7 +34,7 @@ import {
   itemImageDir,
 } from "@/server/imaging/storage";
 import { makeThumbnail } from "@/server/imaging/thumbnails";
-import { cutoutFromGenerated } from "@/server/imaging/cutout-ladder";
+import { cutoutFromGenerated, type ContrastRetry } from "@/server/imaging/cutout-ladder";
 import { generateProductShot, type RegenContext } from "@/server/ai/image-generation";
 import type { Item, RegenJob, RegenSide, RegenSideResult } from "@/shared/types";
 
@@ -114,6 +114,34 @@ export function itemFacts(item: Item): string[] {
   return facts;
 }
 
+/**
+ * Rung 3 of the cutout ladder, as a closure the ladder can call: regenerate this
+ * side against a backdrop the garment cannot match. Shared by the import
+ * pipeline and `regenerateSide` so both spend money the same way — one retry,
+ * only when flat-keying the grey backdrop has already failed QA.
+ *
+ * The result is archived (we paid for it) but deliberately does NOT replace
+ * `generated_<side>`: a garment floating on magenta is an intermediate, and the
+ * grey generation is the better image to show on the item page. Only the
+ * transparent cutout derived from it survives.
+ */
+export function contrastRetry(
+  itemId: string,
+  source: Buffer,
+  mime: string,
+  context?: RegenContext,
+): ContrastRetry {
+  return async () => {
+    const shot = await generateProductShot(source, mime, { ...context, contrastBackdrop: true });
+    if (!shot) return null;
+    await saveBuffer(
+      path.join(dataDir, "generated", itemId, `contrast-${sha256Of(shot.png).slice(0, 8)}.png`),
+      shot.png,
+    );
+    return shot.png;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The per-side operation, shared with scripts/regenerate-images.ts
 
@@ -145,7 +173,10 @@ export async function regenerateSide(
   await saveBuffer(genPath, shot.png);
   upsertImageRow(itemId, `generated_${side}`, genPath, shot.png);
 
-  const cutout = await cutoutFromGenerated(shot.png);
+  const cutout = await cutoutFromGenerated(
+    shot.png,
+    contrastRetry(itemId, src.buffer, src.mime, context),
+  );
   const tileRole = side === "front" ? "thumbnail" : "thumbnail_back";
 
   if (cutout) {
@@ -236,11 +267,13 @@ async function runRegenJob(jobId: string, itemId: string, sides: RegenSide[], fe
   }
 }
 
-/** Marks jobs orphaned by a server restart. Lazy, once per process — same shape as imports/pipeline.ts. */
+/**
+ * Marks jobs orphaned by a server restart. Called from `scripts/boot.ts` before
+ * the server starts — same shape and same reasoning as imports/pipeline.ts.
+ */
 const ORPHAN_STALE_MS = 10 * 60_000;
-let orphanRecoveryDone = false;
 
-function recoverOrphanedRegenJobs(): void {
+export function recoverOrphanedRegenJobs(): number {
   const db = getDb();
   const cutoff = new Date(Date.now() - ORPHAN_STALE_MS).toISOString();
   const orphans = db
@@ -257,20 +290,10 @@ function recoverOrphanedRegenJobs(): void {
   if (orphans.length > 0) {
     console.warn(`[psos] marked ${orphans.length} interrupted regen job(s) as failed`);
   }
-}
-
-function ensureOrphanRecovery(): void {
-  if (orphanRecoveryDone) return;
-  orphanRecoveryDone = true;
-  try {
-    recoverOrphanedRegenJobs();
-  } catch (err) {
-    console.error("[psos] regen-job orphan recovery failed:", err);
-  }
+  return orphans.length;
 }
 
 export function startRegenJob(itemId: string, sides: RegenSide[], feedback: string): RegenJob {
-  ensureOrphanRecovery();
   getItem(itemId); // 404 before spending anything
   const jobId = newId();
   const ts = nowIso();

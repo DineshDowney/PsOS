@@ -8,12 +8,26 @@ import { Button, Field, PageTitle, inputClass } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
 /** Models accepted by the Claude Agent SDK (availability depends on your Claude plan). */
-const MODEL_OPTIONS = [
+/**
+ * Two providers, two lists. Chat runs on the Claude Agent SDK (your Claude Code
+ * login); extraction runs on Gemini via Vertex. Offering one shared list was a
+ * silent no-op — a Claude id in the extraction setting is filtered out before it
+ * can reach Vertex, so the control looked like it worked and did nothing.
+ */
+const CHAT_MODELS = [
   { value: "", label: "Default (your Claude Code model)" },
   { value: "claude-fable-5", label: "Claude Fable 5 — most capable" },
   { value: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { value: "claude-sonnet-5", label: "Claude Sonnet 5 — fast + smart" },
   { value: "claude-haiku-4-5", label: "Claude Haiku 4.5 — fastest, lightest on limits" },
+];
+
+const EXTRACTION_MODELS = [
+  { value: "", label: "Default (newest Flash the project can reach)" },
+  { value: "gemini-flash-latest", label: "Gemini Flash (latest)" },
+  { value: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite — cheapest" },
 ];
 
 /**
@@ -108,31 +122,34 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <PageTitle sub="AI runs through your Claude Code login — no API key stored.">Settings</PageTitle>
+      <PageTitle sub="Chat runs on your Claude Code login. Images and metadata run on Gemini.">
+        Settings
+      </PageTitle>
 
       <div className="mb-10 flex max-w-lg flex-col gap-5 border border-line bg-surface p-6">
-        <Field label="Chat model" hint="used by Stylist Chat">
+        <Field label="Chat model" hint="Claude — used by Stylist Chat">
           <select className={inputClass} value={model} onChange={(e) => setModel(e.target.value)}>
-            {MODEL_OPTIONS.map((o) => (
+            {CHAT_MODELS.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
         </Field>
         <Field
           label="Import extraction model"
-          hint="reads your photos during import and drafts the item's metadata"
+          hint="Gemini — reads your photos during import and drafts the item's metadata"
         >
           <select className={inputClass} value={extractionModel} onChange={(e) => setExtractionModel(e.target.value)}>
-            {MODEL_OPTIONS.map((o) => (
+            {EXTRACTION_MODELS.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
         </Field>
         <p className="text-xs leading-relaxed text-muted">
-          Both run through your Claude Code login. “Default” uses whatever model your Claude
-          Code session uses. Haiku is fastest/cheapest on your usage limits; Opus is the most
-          thorough — a reasonable split is a strong model for extraction (accuracy on photos
-          matters, runs once per item) and default for chat.
+          Chat draws on your Claude Code usage limits, so “Default” is usually right. Extraction
+          bills to the Vertex project by the token, and runs once per imported item — Flash is
+          accurate enough on garment photos that the heavier tiers are rarely worth it. Either
+          “Default” falls back through a list of current models, so a retired model id never
+          breaks an import.
         </p>
         <div>
           <Button variant="solid" onClick={() => save.mutate()}>Save</Button>
