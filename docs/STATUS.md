@@ -5,29 +5,44 @@ Last updated: 2026-07-27.
 
 ## Current objective
 
-**Simplification pass, 2026-07-27 — written and verified locally, not yet deployed.** Four
-changes, all green on 121 tests + typecheck + build:
+**UI pass, 2026-07-27 — written and verified locally, not yet deployed.** 129 tests +
+typecheck + build all green. Four things landed:
 
-- **No ML segmentation anywhere.** imgly and onnxruntime are gone (node_modules 1151 MB →
-  577 MB, no native ML runtime, no child process). When flat-keying the grey backdrop fails,
-  the ladder regenerates the garment once against a magenta backdrop and keys that instead —
-  chroma-key for one item on demand rather than for the whole catalog.
-- **Migrations run before the server accepts a request.** `scripts/boot.ts` via npm
-  `prestart`/`predev`; it also recovers jobs orphaned by the last restart. "Table missing
-  right after a restart" is no longer a thing that can happen.
-- **Extraction is Gemini-only, and metadata is anchored to the photographs.** The Claude
-  branch is gone. The metadata call now receives the cropped photos *and* the studio shots,
-  with the photograph declared authoritative on colour, pattern, material and branding —
-  closing the loop where a render's drift became a recorded fact and then grounded the next
-  regeneration.
-- **Outfit suggestions are ranked by a model that can see the clothes.** The engine still
-  decides what is wearable; Gemini reorders its shortlist from garment tiles and writes one
-  line each; `validatePicks` throws away anything that wasn't an engine candidate.
+- **One type scale, and uppercase is rationed to three roles** (page `<h1>`, wordmark, nav).
+  Roughly 48 elements were tracked uppercase at six different tracking values between 9px and
+  12px — when every string shouts, none of them do. Everything else is sentence case at a
+  size you can read.
+- **Three surface tiers** (`.card` / `.well` / hairline-for-dividers) replace the single 1px
+  border that was on containers and 9px sub-buttons alike.
+- **Loading and in-flight states exist.** Skeletons that hold the real layout instead of
+  blanking to a spinner, and a `loading` prop on `Button` wired through every mutation —
+  several of which previously computed `isPending` and never used it.
+- **Item page and Import rebuilt.** Provenance now marks all 14 AI-written fields instead of
+  one; a save bar appears when the form is dirty; Archive is a real dialog. Import gets a
+  stage rail instead of seven wrapped uppercase words, photo previews with drag-drop and
+  paste, and one merged timeline so a garment does not appear to vanish between upload and
+  pipeline.
 
-**Unverified against the real wardrobe.** Three things need the VM and a few cents: the
-photo-authoritative metadata (re-extract 2–3 known items and diff the colour fields), the
-first real styled suggestion, and — if a garment ever defeats the grey backdrop — the magenta
-retry, which has no failing case to test against yet.
+**Two real bugs the screenshots caught** that reading the code had not: the phone wardrobe
+rendered as a **single column** (`minmax(240px,1fr)` resolves to one track at 390px), and the
+Color filter rendered full-width because `inputClass` carries `w-full` and appending `w-28`
+loses on stylesheet order, not class order.
+
+**Not verified.** The screenshots run against the LOCAL database, which holds the seeded
+placeholder wardrobe — opaque black squares, no `fieldSources` — so the paper tile, the
+contact shadow and the `AI` provenance marks are all invisible in a shot. The import stage
+rail and the photo previews have no live job to render against; the caption logic under the
+rail is unit-tested, its pixels are not.
+
+**Deployed and confirmed earlier the same day:** the simplification pass (`7d5228e`) is live
+on `psos-1`. The prestart hook fired correctly on the real service — `[psos] migrations up to
+date` before `next start`, 0 restarts, `localhost:3000 → 200`. That was the one deploy risk
+worth naming, and it is closed.
+
+Still unverified from that pass, needing the VM and a few cents: photo-authoritative metadata
+(re-extract 2–3 known items and diff the colour fields), the first real styled suggestion,
+and — if a garment ever defeats the grey backdrop — the magenta retry, which has no failing
+case to test against yet.
 
 Then: the off-machine backup, which is still the highest-risk open item.
 
@@ -51,7 +66,7 @@ hits the VM directly.
 | Boot | `scripts/boot.ts` runs as npm `prestart`/`predev`: migrations + orphaned-job recovery, before the server serves anything. Non-zero exit aborts the launch |
 | Upload | **Non-blocking.** Client queue (`components/upload-queue.tsx`) in `Providers`, one garment at a time, XHR progress. Photos shrink to 3000px/q0.85 before upload (~11.4 MB pair → ~2.4 MB). Survives navigation, **not** a tab close |
 | Upload size ceiling | **64 MB**, one shared constant in `server/lib/upload-limits.ts` feeding both `next.config.ts` and the route guard. Next's 10 MB default *truncated* bodies instead of rejecting them |
-| Laptop data | **None.** `data/`, `models/` and all local backups deleted 2026-07-26 at Dinesh's request. The VM disk is the only copy — see the GCS backup risk below |
+| Laptop data | **Seed only.** 14 placeholder garments from `npm run seed`, for local development and screenshots. The real wardrobe (24 active, 25 archived, 299 images, 273 MB) exists **only on the VM disk** — see the GCS backup risk below |
 | Prompts | Rewritten. Image = PRESENTATION (one pose/light/framing for every garment) vs IDENTITY (untouchable). Metadata = naming convention + category disambiguation + specific colour names |
 | Cutouts | Deterministic only: native alpha → flat-key the grey backdrop → one magenta-backdrop regeneration → keyed-with-QA-warning. `cutoutQa` judges every rung |
 | Gemini rate limits | Same-model backoff 20/45/90s honouring `Retry-After`, plus 5s batch pacing and `--missing` to retry a partial run |
@@ -61,21 +76,25 @@ hits the VM directly.
 | Inbound firewall | **None.** `psos-app` (tcp:3000) and `psos-allow-web` (tcp:80/443) both deleted 2026-07-26 — Funnel dials out, so no port is open to the app. `default-allow-ssh` stays as the recovery path |
 | Billing account `01BB42-93FE43-97EFA2` | Open; trial-upgrade credit valid to 2026-10-14 |
 | External IP | **Ephemeral** (`35.244.15.32` today, changes on stop/start — nothing depends on it). Static `34.100.219.116` released 2026-07-26 |
-| VM shutdown | 60-min autostop at boot as backstop, plus a 30-min keepalive check (`psos-keepalive.timer`) that cancels it while there is work or a human |
+| VM shutdown | 60-min autostop at boot as backstop, plus a 30-min keepalive check (`psos-keepalive.timer`) that cancels it while there is work or a human. Settings offers 30 min / 2 h / 4 h holds, a **Release** (`DELETE /api/system/power` — forward-only `holdFor` made a mis-click unreversible), and a live countdown against sampled server time. Deliberately **no** in-app power-off: the app is unprivileged and could only promise "within 30 min" |
 | VM config in git | `deploy/vm/` — units, keepalive script, install steps |
 | ML segmentation | **Gone.** No imgly, no onnxruntime, no BiRefNet, no child process. `node_modules` 1151 MB → 577 MB |
 | AI split | Gemini does everything that looks at a garment (metadata, product shots, outfit ranking). Claude does chat only — so **chat works on the laptop and not on the VM** |
 | Outfit suggestions | Engine shortlists 8 wearable candidates → Gemini reorders from ≤12 garment tiles and writes one line each → `validatePicks` discards anything not on the shortlist → any failure falls back to engine ranking, reason shown on the page |
-| Editorial UI (wardrobe/item/import) | Shipped `5babeec` |
+| **Type scale** | One scale in `@theme`. Tracked uppercase is rationed to three roles — page `<h1>`, wordmark, nav — and every other string is sentence case. See DESIGN §10.2 |
+| **Surfaces** | `.card` (raised paper, no border, warm shadow) · `.well` (recessed) · `border-line` demoted to dividers and clickable edges. 2px radius throughout, real `:focus-visible` outline |
+| **Loading states** | `Skeleton` / `SkeletonGrid` hold the real geometry. `Button` has a `loading` prop; every mutation uses it |
+| **Provenance in the UI** | `Field source=` renders an `AI` mark on all 14 AI-written item fields (was 1). Clears on edit, because the edit flips the field to `user` |
+| **Screenshots** | `npm run shots` — `playwright-core` driving the installed Edge, full-page PNG of every screen at 1440px and 390px. No bundled browser (~3 MB, not ~150 MB) |
 | **Theme** | **Light.** White page `#fdfdfc`, paper garment grounds `#f4f1ea`, burgundy accent `#6e302e`, ink `#191817`. All 9 screens via semantic tokens in `globals.css` |
 | **Garment separation** | `.garment-shadow` — warm drop-shadow under transparent cutouts, deepening on hover. Replaces `.garment-glow`, which existed for the same reason on near-black |
 | **Item labels** | Names hidden on **every** screen; `itemLabel()` in `components/ui.tsx` is the one definition (colour · subcategory). Column, editor field, AI inference and search all unchanged |
 | **Tiles** | 240px **square** (reverted from portrait `.78` — that was clipping the pipeline's own 88% garment occupancy down to ~57% of tile height). Full-bleed, no padding |
 | **Front/back rotation** | New `thumbnail_back` image role, same 640px/88%-occupancy tile as the front. **15 of 23 items** have a back (8 were imported front-only, no source to generate one from). Grid tile crossfades on hover (desktop) or a staggered slow timer (touch, `hover:none`). Item page shows generated front → generated back → original front → original back, each falling back independently if that side was never regenerated |
-| **Motion** | CSS only, **0 KB added**. Tile entrance stagger (capped at 12, now 12px/380ms — bumped, the first pass was too subtle to register), hover garment lift, front/back crossfade, filter cross-dissolve, cross-page fade, button/segmented press-scale (fires on tap, not just click), toast slide-in. One `prefers-reduced-motion` block disables all of it |
+| **Motion** | CSS only, **0 KB added**. Tile entrance stagger (capped at 12), hover garment lift, front/back crossfade, filter cross-dissolve, cross-page fade, button/segmented press-scale (fires on tap, not just click), toast slide-in, skeleton sweep, and the nav's active bar sliding between items via a shared `view-transition-name`. One `prefers-reduced-motion` block disables all of it |
 | **Image regeneration** | **On demand from the item page** (`server/imaging/regenerate.ts`). Front/back/both + optional feedback; prompt grounded in current metadata (no brand, deliberately). Async job + 2s poll — a two-sided regen is 15-40s of sequential Gemini calls. 1-wide at the job level; holds the VM awake via the shared `lib/work-hold.ts`. **~$0.04/side, shown on the button** |
 | **Photo navigation** | Item page viewer has prev/next arrows, swipe, and clickable dots. Any manual navigation stops the auto-cycle permanently |
-| **First paint** | `/wardrobe` **server-renders** (`listItems` is sync, so no HTTP hop) and is `force-dynamic`. The other 8 screens still fetch after hydration — they still open on a spinner |
+| **First paint** | `/wardrobe` **server-renders** (`listItems` is sync, so no HTTP hop) and is `force-dynamic`. The other 8 screens still fetch after hydration, but now open on a skeleton that holds the layout rather than a bare spinner |
 | App icon | Done (`src/app/icon.svg`) |
 
 ## Live findings (2026-07-25 session)

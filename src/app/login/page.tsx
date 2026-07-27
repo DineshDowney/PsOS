@@ -34,7 +34,7 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-[70vh] items-center justify-center">
       <form onSubmit={submit} className="flex w-full max-w-xs flex-col gap-6">
-        <div className="text-center text-xs font-semibold uppercase tracking-[0.35em]">
+        <div className="text-center text-nav font-semibold uppercase tracking-[0.28em]">
           Stylist&nbsp;OS
         </div>
         <input
@@ -45,11 +45,11 @@ export default function LoginPage() {
           placeholder="Password"
           className={inputClass}
         />
-        {error ? <div className="text-center text-xs text-danger">{error}</div> : null}
+        {error ? <div className="text-center text-meta text-danger">{error}</div> : null}
         <button
           type="submit"
           disabled={busy || !password}
-          className="bg-fg px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] text-bg transition-colors hover:bg-accent hover:text-accent-fg disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-[2px] bg-fg px-4 py-2 text-meta font-medium text-bg transition-colors hover:bg-accent hover:text-accent-fg disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Checking…" : "Enter"}
         </button>

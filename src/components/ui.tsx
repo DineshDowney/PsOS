@@ -5,7 +5,13 @@ import { useEffect, useState } from "react";
 import type { ImageRole, Item, ItemImage } from "@/shared/types";
 import Link from "next/link";
 
-/** Tracked uppercase micro-label — the one normalization point for section headers. */
+/**
+ * A section heading inside a page.
+ *
+ * Was a 12px uppercase tracked whisper, which put it at the same volume as the
+ * buttons and field labels around it — so a heading did not read as a heading.
+ * Sentence case at 16px, full-strength text: it now outranks its contents.
+ */
 export function SectionLabel({
   children,
   className,
@@ -13,13 +19,14 @@ export function SectionLabel({
   children: React.ReactNode;
   className?: string;
 }) {
-  return (
-    <div className={clsx("text-xs font-medium uppercase tracking-[0.08em] text-muted", className)}>
-      {children}
-    </div>
-  );
+  return <h2 className={clsx("text-heading text-fg", className)}>{children}</h2>;
 }
 
+/**
+ * The page masthead — one of only three places in the app that still uses
+ * tracked uppercase (the others are the wordmark and the nav). See the TYPE
+ * SCALE note in globals.css for why that restraint is the whole point.
+ */
 export function PageTitle({
   children,
   sub,
@@ -31,9 +38,11 @@ export function PageTitle({
 }) {
   return (
     <header className="mb-10">
-      {eyebrow ? <SectionLabel className="mb-3">{eyebrow}</SectionLabel> : null}
-      <h1 className="text-3xl font-light uppercase tracking-[0.18em] md:text-4xl">{children}</h1>
-      {sub ? <p className="mt-2 text-sm text-muted">{sub}</p> : null}
+      {eyebrow ? (
+        <div className="mb-3 text-meta text-accent">{eyebrow}</div>
+      ) : null}
+      <h1 className="text-display uppercase md:text-[2.625rem]">{children}</h1>
+      {sub ? <p className="mt-3 max-w-prose text-meta text-muted">{sub}</p> : null}
     </header>
   );
 }
@@ -61,9 +70,9 @@ export function SegmentedControl({
           type="button"
           onClick={() => onChange(opt.value)}
           className={clsx(
-            "relative -ml-px shrink-0 whitespace-nowrap border border-line px-3.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.08em] transition-[color,background-color,border-color,transform] duration-200 first:ml-0 active:scale-95",
+            "relative -ml-px shrink-0 whitespace-nowrap border border-line px-3.5 py-1.5 text-meta capitalize transition-[color,background-color,border-color,transform] duration-200 first:ml-0 first:rounded-l-[2px] last:rounded-r-[2px] active:scale-95",
             opt.value === value
-              ? "z-10 border-fg bg-fg text-bg"
+              ? "z-10 border-fg bg-fg font-medium text-bg"
               : "text-muted hover:text-fg",
           )}
         >
@@ -79,6 +88,7 @@ export function Button({
   onClick,
   variant = "outline",
   disabled,
+  loading = false,
   type = "button",
   className,
 }: {
@@ -86,6 +96,14 @@ export function Button({
   onClick?: () => void;
   variant?: "outline" | "solid" | "ghost" | "danger";
   disabled?: boolean;
+  /**
+   * In-flight. Shows a spinner and blocks the click.
+   *
+   * Every caller used to swap its own label instead ("Save changes" ->
+   * "Saving…"), which loses the label exactly when you want to confirm what you
+   * pressed, and resizes the button by more than the spinner does.
+   */
+  loading?: boolean;
   type?: "button" | "submit";
   className?: string;
 }) {
@@ -93,11 +111,12 @@ export function Button({
     <button
       type={type}
       onClick={onClick}
-      disabled={disabled}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
       className={clsx(
         // scale-95 on press is the one motion cue that reaches touch AND mouse
         // for free — :active fires on tap, not just click-and-hold.
-        "px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] transition-[color,background-color,border-color,transform] duration-150 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100",
+        "inline-flex items-center gap-2 rounded-[2px] px-4 py-2 text-meta font-medium transition-[color,background-color,border-color,transform] duration-150 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100",
         variant === "outline" && "border border-line text-fg hover:border-muted",
         variant === "solid" && "bg-fg text-bg hover:bg-accent hover:text-accent-fg",
         variant === "ghost" && "text-muted hover:text-fg",
@@ -105,8 +124,31 @@ export function Button({
         className,
       )}
     >
+      {loading ? (
+        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border border-current border-t-transparent" />
+      ) : null}
       {children}
     </button>
+  );
+}
+
+/**
+ * Marks a value the AI wrote and you have not touched.
+ *
+ * Only `ai` renders. Tagging user-owned fields too would put a badge on almost
+ * every row and say nothing — the useful signal is "this was guessed, check
+ * it", and it disappears the moment you edit, because that edit flips the
+ * field's provenance to `user` and AI can never overwrite it again.
+ */
+export function AiMark({ source }: { source?: "ai" | "user" }) {
+  if (source !== "ai") return null;
+  return (
+    <span
+      title="Written by AI — your edit replaces it permanently"
+      className="rounded-[2px] bg-surface-2 px-1.5 py-px text-micro font-medium text-faint"
+    >
+      AI
+    </span>
   );
 }
 
@@ -114,37 +156,129 @@ export function Field({
   label,
   children,
   hint,
+  source,
 }: {
   label: string;
   children: React.ReactNode;
   hint?: string;
+  /** Provenance of the underlying item field, when this Field edits one. */
+  source?: "ai" | "user";
 }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-[10px] uppercase tracking-[0.08em] text-muted">
+      <span className="flex flex-wrap items-center gap-x-2 text-meta text-muted">
         {label}
-        {hint ? <span className="ml-2 normal-case tracking-normal text-faint">{hint}</span> : null}
+        <AiMark source={source} />
+        {hint ? <span className="text-faint">{hint}</span> : null}
       </span>
       {children}
     </label>
   );
 }
 
+/**
+ * Modal confirmation. Replaces `window.confirm`, which cannot be styled, blocks
+ * the whole tab, and looks like the browser is warning you about the site.
+ */
+export function ConfirmDialog({
+  open,
+  title,
+  body,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+  danger = false,
+  busy = false,
+}: {
+  open: boolean;
+  title: string;
+  body: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  danger?: boolean;
+  busy?: boolean;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onCancel]);
+
+  if (!open) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-fg/25 p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="card w-full max-w-sm p-6 shadow-[0_18px_50px_rgb(25_24_22/0.18)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-heading text-fg">{title}</h2>
+        <p className="mt-2 text-meta text-muted">{body}</p>
+        <div className="mt-6 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button variant={danger ? "danger" : "solid"} onClick={onConfirm} loading={busy}>
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * `w-full` is deliberate and load-bearing for the ~30 form fields that expect
+ * it. Anything that wants a narrower input must constrain the PARENT — appending
+ * `w-28` here loses, because Tailwind resolves `w-full` vs `w-28` by the order
+ * they appear in the generated stylesheet, not the order in the class attribute.
+ */
 export const inputClass =
-  "w-full border border-line bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-faint hover:border-muted focus:border-fg";
+  "w-full rounded-[2px] border border-line bg-bg px-3 py-2 text-body text-fg outline-none placeholder:text-faint hover:border-muted focus:border-fg";
 
 export function StatusBadge({ status }: { status: Item["status"] }) {
   return (
     <span
       className={clsx(
-        "border px-2 py-0.5 text-[9px] uppercase tracking-[0.08em]",
-        status === "available" && "border-ok/50 text-ok",
-        status === "laundry" && "border-line text-muted",
-        status === "unavailable" && "border-danger/50 text-danger",
+        "rounded-[2px] border px-2 py-0.5 text-micro capitalize",
+        status === "available" && "border-ok/40 bg-ok/8 text-ok",
+        status === "laundry" && "border-line bg-surface-2 text-muted",
+        status === "unavailable" && "border-danger/40 bg-danger/8 text-danger",
       )}
     >
       {status}
     </span>
+  );
+}
+
+/** A block that holds the shape of content still loading. */
+export function Skeleton({ className }: { className?: string }) {
+  return <div className={clsx("skeleton", className)} aria-hidden="true" />;
+}
+
+/**
+ * The wardrobe grid's loading shape. Same tile geometry and gaps as the real
+ * grid, so content landing does not move the page.
+ */
+export function SkeletonGrid({ count = 8, className }: { count?: number; className?: string }) {
+  return (
+    <div className={className} aria-busy="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="flex flex-col gap-3">
+          <Skeleton className="aspect-square w-full" />
+          <Skeleton className="h-3 w-2/3" />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -280,7 +414,7 @@ export function ItemCard({
         // portrait ratio the reference used — the thumbnail pipeline already
         // trims + recenters the garment at 88% of a SQUARE canvas, so a portrait
         // box just adds letterboxing on top of that.
-        className="relative block aspect-square overflow-hidden bg-surface"
+        className="card relative block aspect-square overflow-hidden"
         title={item.name || undefined}
       >
         {front ? (
@@ -295,8 +429,8 @@ export function ItemCard({
             loading="lazy"
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-[10px] uppercase tracking-[0.08em] text-faint">
-            no photo
+          <div className="flex h-full items-center justify-center text-meta text-faint">
+            No photo
           </div>
         )}
         {hasBack ? (
@@ -317,21 +451,25 @@ export function ItemCard({
           </div>
         ) : null}
       </Link>
-      <div className="mt-3 text-[11px] uppercase tracking-[0.08em] text-muted">{label}</div>
+      <div className="mt-3 text-meta capitalize text-fg">{label}</div>
       {footer}
     </div>
   );
 }
 
 export function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="py-16 text-center text-sm text-muted">{children}</div>;
+  return (
+    <div className="rounded-[2px] border border-dashed border-line px-6 py-12 text-center text-meta text-muted">
+      {children}
+    </div>
+  );
 }
 
 export function Spinner({ label }: { label?: string }) {
   return (
-    <div className="flex items-center gap-3 text-muted">
-      <span className="inline-block h-3 w-3 animate-spin border border-muted border-t-transparent" />
-      {label ? <span className="text-xs uppercase tracking-[0.08em]">{label}</span> : null}
+    <div className="flex items-center gap-3 text-muted" role="status">
+      <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border border-muted border-t-transparent" />
+      {label ? <span className="text-meta">{label}</span> : null}
     </div>
   );
 }

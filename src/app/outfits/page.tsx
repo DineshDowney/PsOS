@@ -7,7 +7,7 @@ import {
   FORMALITIES, type Outfit, type StyledSuggestion, type StylistResult,
 } from "@/shared/types";
 import {
-  Button, Empty, PageTitle, Spinner, inputClass, itemLabel, itemThumb,
+  Button, Empty, PageTitle, SectionLabel, Spinner, inputClass, itemLabel, itemThumb,
 } from "@/components/ui";
 import { useToast } from "@/components/providers";
 
@@ -19,13 +19,13 @@ function OutfitItems({ items }: { items: StyledSuggestion["items"] }) {
         const label = itemLabel(item);
         return (
           <div key={item.id} className="w-24">
-            <div className="aspect-square border border-line bg-surface">
+            <div className="card aspect-square">
               {thumb ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={thumb} alt={label} className="h-full w-full object-contain p-1" />
               ) : null}
             </div>
-            <div className="mt-1 truncate text-[10px] text-muted" title={item.name || undefined}>
+            <div className="mt-1.5 truncate text-micro capitalize text-fg" title={item.name || undefined}>
               <span className="text-faint">{slot.replace("_", " ")} · </span>
               {label}
             </div>
@@ -89,14 +89,14 @@ export default function OutfitsPage() {
 
       <div className="mb-8 flex items-end gap-3">
         <label className="flex flex-col gap-1.5">
-          <span className="text-[10px] uppercase tracking-[0.2em] text-muted">Occasion</span>
+          <span className="text-meta text-muted">Occasion</span>
           <select value={formality} onChange={(e) => setFormality(e.target.value)} className={`${inputClass} w-44`}>
             <option value="">Anything</option>
             {FORMALITIES.map((f) => <option key={f} value={f}>{f.replace("_", " ")}</option>)}
           </select>
         </label>
-        <Button variant="solid" onClick={() => suggest.mutate()} disabled={suggest.isPending}>
-          {suggest.isPending ? "Thinking…" : "Suggest outfits"}
+        <Button variant="solid" onClick={() => suggest.mutate()} loading={suggest.isPending}>
+          Suggest outfits
         </Button>
       </div>
 
@@ -113,22 +113,24 @@ export default function OutfitsPage() {
         and silently degrading would make that indistinguishable from a bad model.
       */}
       {result?.fallbackReason ? (
-        <p className="mb-6 text-xs text-muted">Ranked by the engine — {result.fallbackReason}.</p>
+        <p className="mb-6 rounded-[2px] border-l-2 border-accent bg-surface px-4 py-2 text-meta text-muted">
+          Ranked by the engine — {result.fallbackReason}.
+        </p>
       ) : null}
 
       {suggestions && suggestions.length > 0 ? (
         <div className="mb-14 flex flex-col gap-6">
           {suggestions.map((s, idx) => (
-            <div key={idx} className="flex flex-wrap items-center justify-between gap-4 border border-line bg-surface p-5">
+            <div key={idx} className="card flex flex-wrap items-center justify-between gap-4 p-5">
               <div className="flex flex-col gap-3">
                 <OutfitItems items={s.items} />
                 {s.reason ? (
-                  <p className="max-w-md text-xs leading-relaxed text-muted">{s.reason}</p>
+                  <p className="max-w-md text-meta text-muted">{s.reason}</p>
                 ) : null}
               </div>
               <div className="flex items-center gap-2">
-                <span className="mr-2 text-[10px] uppercase tracking-[0.2em] text-faint">match {Math.round(s.score * 100)}%</span>
-                <Button onClick={() => save.mutate(s)}>Save</Button>
+                <span className="mr-2 text-micro tabular-nums text-faint">{Math.round(s.score * 100)}% match</span>
+                <Button onClick={() => save.mutate(s)} loading={save.isPending && save.variables === s}>Save</Button>
                 <Button
                   variant="solid"
                   onClick={() =>
@@ -146,15 +148,17 @@ export default function OutfitsPage() {
         </div>
       ) : null}
 
-      <h2 className="mb-4 text-[10px] uppercase tracking-[0.25em] text-muted">Saved outfits</h2>
+      <SectionLabel className="mb-4">Saved outfits</SectionLabel>
       {!savedData || savedData.outfits.length === 0 ? (
-        <Empty>No saved outfits yet.</Empty>
+        <div className="max-w-2xl">
+          <Empty>No saved outfits yet.</Empty>
+        </div>
       ) : (
         <div className="flex flex-col gap-4">
           {savedData.outfits.map((o) => (
-            <div key={o.id} className="flex flex-wrap items-center justify-between gap-4 border border-line bg-surface p-5">
+            <div key={o.id} className="card flex flex-wrap items-center justify-between gap-4 p-5">
               <div>
-                {o.name ? <div className="mb-2 text-sm">{o.name}</div> : null}
+                {o.name ? <div className="mb-2 text-meta font-medium text-fg">{o.name}</div> : null}
                 <OutfitItems items={o.items} />
               </div>
               <div className="flex gap-2">

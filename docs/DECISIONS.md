@@ -3,6 +3,85 @@
 Significant technical decisions, newest first. Add an entry whenever a choice would surprise
 a future reader or was made against a plausible alternative.
 
+## 2026-07-27 — Claude can see the UI now, and the type scale spends uppercase on three things
+
+### A screenshot harness, because "add motion" was the wrong first move
+
+Dinesh asked for motion and animation. The app already had a real motion layer — staggered
+tile entrance, garment lift, front/back crossfade, toast slide-in, press-scale, cross-page
+view transitions, all under one `prefers-reduced-motion` block. Adding more keyframes on top
+would have made it read as over-animated while leaving the actual problem untouched: **there
+were no loading or in-flight states**, so more motion would decorate a page that still
+flashed empty.
+
+He also asked how to close the "you can't see the output" gap. The answer did not need a new
+product: **`Read` can read PNGs**, so the repo only needed something that renders a page to a
+file. `scripts/shots.ts` drives the Edge already installed on Windows via `playwright-core`
+and writes a full-page PNG of every screen at 1440px and 390px.
+
+`playwright-core`, not `playwright`: the full package downloads its own ~150MB Chromium, and
+devDependencies ARE installed on the VM because `npm run build` needs them. A bundled browser
+would have shipped 150MB to a machine that will never open one, undoing a quarter of what the
+simplification pass had just reclaimed. `playwright-core` is ~3MB and launches
+`channel: "msedge"`.
+
+**It paid for itself immediately, with two bugs that reading the code had not surfaced:**
+
+- The **phone wardrobe rendered as a single column**. `grid-cols-[repeat(auto-fill,minmax(240px,1fr))]`
+  resolves to exactly one track at 390px, so the primary device showed one full-width garment
+  at a time. Now a hard `grid-cols-2` below the `sm` breakpoint.
+- The **Color filter rendered full-width** and pushed the status control onto its own row.
+  `inputClass` starts with `w-full`; appending `w-28` loses, because Tailwind resolves that
+  pair by order in the generated stylesheet, not order in the class attribute. Fixed by
+  sizing the wrapper, and the constraint is now written into `inputClass`'s doc comment
+  because it will catch the next person too.
+
+Also corrected a claim made in the same session: the local `data/` holds the **seeded**
+wardrobe, not real garments. Seed images are opaque black squares, so the paper tile and the
+contact shadow — both of which exist specifically for transparent cutouts — cannot be judged
+from a shot. Layout, type, spacing and surfaces can.
+
+### Uppercase is a budget, not a default
+
+~48 elements were tracked uppercase at six different tracking values (`.08` `.15` `.18` `.2`
+`.25` `.35`), all sized 9–12px: page titles, section headers, buttons, field labels, badges,
+tag chips, list rows, import stage names. The problem is not that it is ugly. It is that
+**when almost every string on screen shouts, uppercase stops meaning "important" and just
+becomes the font**, so a heading cannot outrank the button next to it.
+
+Dinesh chose "refine the identity" over "keep it" or "start over", and gave the uppercase call
+to me. The budget: **the page `<h1>`, the wordmark, and the nav.** Nothing else. The masthead
+treatment survives — it is the most distinctive thing about the app — precisely because it is
+now rare. Everything else drops to sentence case on a six-step scale defined once in `@theme`.
+
+The same argument in another dimension produced the surface tiers: `border border-line` was on
+cards, buttons, inputs, badges, chips, list rows and 9px sub-buttons, so a container and a
+control were the same object. Now `.card` (raised paper, no border) / `.well` (recessed) /
+hairline for dividers and clickable edges.
+
+### The power card gets a way back, and deliberately no power-off
+
+`holdFor` only ever moves the deadline forward — correct, so a 10-minute heartbeat cannot cut
+a 4-hour manual hold short. The cost was that a mis-clicked hold pinned the VM up, and
+billing, for four hours with no undo. `releaseHold()` / `DELETE /api/system/power` is the
+escape hatch that rule needs.
+
+**No "power off now" button**, and that is the interesting half. The app runs unprivileged;
+the only thing that can call `shutdown` is the root-run keepalive script, which fires every 30
+minutes. An in-app button could therefore only honestly promise "within half an hour" — and a
+control that lies is worse than no control. `vm-stop.cmd` and the Google Cloud app already do
+it properly. Making it real would need a narrow sudoers grant on the VM; not taken.
+
+### What was rejected
+
+- **More animation as the first move.** Named above: it makes an empty flash more noticeable,
+  not less. Loading states first, decoration after.
+- **A second typeface.** "Rework the type scale" tempts a display serif. The problem was never
+  the face — Instrument Sans at 34px with wide tracking is a good masthead — it was that the
+  masthead treatment was applied to everything. Reserving it fixed the hierarchy at zero cost
+  in bytes and zero risk to the identity Dinesh already signed off on.
+- **A dark theme.** Not asked for, and the palette was deliberately chosen on 2026-07-26.
+
 ## 2026-07-27 — Simplification pass: no ML segmentation, eager migrations, Gemini-only extraction, model-ranked outfits
 
 Dinesh reviewed the design doc and asked, of each subsystem, whether it was actually earning

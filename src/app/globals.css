@@ -36,16 +36,51 @@
   /* Motion. Values from the reference, so the whole app eases alike. */
   --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
   --ease-art: cubic-bezier(0.2, 0.75, 0.2, 1);
+
+  /*
+   * TYPE SCALE
+   *
+   * The rule this scale exists to enforce: tracked uppercase is used in exactly
+   * three places — the wordmark, the nav, and the page h1. Nowhere else.
+   *
+   * Before this, ~48 elements were uppercase at six different tracking values
+   * between 9px and 12px: buttons, field labels, badges, tag chips, list rows,
+   * import stage names, section headers. When almost every string on screen
+   * shouts, uppercase stops meaning "important" and just becomes the font. The
+   * masthead treatment only reads as a deliberate choice if it is rare, so
+   * everything else drops to sentence case at a size you can actually read.
+   */
+  --text-display: 2.125rem;
+  --text-display--line-height: 1.06;
+  --text-display--letter-spacing: 0.13em;
+  --text-display--font-weight: 300;
+
+  /* Section headings. Sentence case — these used to be 12px uppercase whispers. */
+  --text-heading: 1rem;
+  --text-heading--line-height: 1.35;
+  --text-heading--font-weight: 500;
+
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.55;
+
+  /* Labels, meta, list rows, buttons. The workhorse. */
+  --text-meta: 0.8125rem;
+  --text-meta--line-height: 1.45;
+
+  /* Badges and provenance markers. The floor — nothing renders below this. */
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1.4;
+  --text-micro--letter-spacing: 0.02em;
+
+  /* The one tracked-uppercase role that is not display type: nav + wordmark. */
+  --text-nav: 0.6875rem;
+  --text-nav--line-height: 1.4;
+  --text-nav--letter-spacing: 0.18em;
 }
 
 /*
  * Cross-page fade. Needs experimental.viewTransition in next.config.ts, which is
  * what wraps client navigations in startViewTransition.
- *
- * Honest caveat: 8 of the 9 screens still fetch after hydration, so navigating
- * INTO them fades a full page out and a spinner in. Wardrobe is the exception —
- * it server-renders, so that one transition lands on real content. If the rest
- * read worse than a hard cut, this block and the config flag come out together.
  */
 @view-transition {
   navigation: auto;
@@ -60,15 +95,30 @@ html {
   background: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
+  font-size: 16px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   /* Instrument Sans is variable across the weights we use — never fake one. */
   font-synthesis: none;
 }
 
+body {
+  font-size: var(--text-body);
+  line-height: 1.55;
+}
+
 ::selection {
   background: var(--color-fg);
   color: var(--color-bg);
+}
+
+/*
+ * Keyboard focus. There was none — `outline-none` on inputs with only a border
+ * change to replace it, and nothing at all on buttons.
+ */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 /* thin, quiet scrollbars */
@@ -86,8 +136,36 @@ html {
 }
 
 /*
+ * SURFACES
+ *
+ * Three tiers, because before this every container AND every control wore the
+ * same 1px `border-line`: cards, buttons, inputs, badges, tag chips, list rows,
+ * 9px sub-buttons. Nothing could read as primary because nothing was quieter
+ * than anything else.
+ *
+ *   .card  — a raised region. Paper, no border, a warm shadow to lift it.
+ *   .well  — a recessed region inside a card (thumbnails, code, empty slots).
+ *   border-line — demoted to dividers and to controls that need an edge to be
+ *                 clickable at all.
+ */
+@layer components {
+  .card {
+    background: var(--color-surface);
+    border-radius: 2px;
+    box-shadow:
+      0 1px 2px rgb(39 31 23 / 0.05),
+      0 6px 16px -10px rgb(39 31 23 / 0.14);
+  }
+
+  .well {
+    background: var(--color-surface-2);
+    border-radius: 2px;
+  }
+}
+
+/*
  * Grounds the garment on its tile. Applied only to transparent cutouts (.png)
- * via garmentGlowClass() — the shadow hugs the silhouette, so it reads as the
+ * via garmentShadowClass() — the shadow hugs the silhouette, so it reads as the
  * garment resting on paper rather than a rectangle with a box-shadow. Opaque
  * JPEG fallbacks have their own edge and get nothing.
  *
@@ -198,13 +276,48 @@ html {
 }
 
 /*
- * One switch for everything the overhaul animates. Anything added later that
- * moves belongs in here too.
+ * Skeletons. A slow sweep rather than a pulse: a pulsing block competes with
+ * the spinner it replaces, a sweep reads as "arriving".
+ */
+@keyframes skeleton-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.skeleton {
+  background-color: var(--color-surface);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(255 255 255 / 0.65) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  border-radius: 2px;
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+}
+
+/*
+ * The nav's active marker slides between items instead of blinking on. One
+ * shared `view-transition-name`, so the browser tweens the old position to the
+ * new one across a client navigation for free.
+ */
+.nav-marker {
+  view-transition-name: nav-marker;
+}
+
+/*
+ * One switch for everything that moves. Anything added later that animates
+ * belongs in here too.
  */
 @media (prefers-reduced-motion: reduce) {
   .tile-in,
   .fade-in,
-  .toast-in {
+  .toast-in,
+  .skeleton {
     animation: none;
   }
   .garment-shadow,
@@ -215,6 +328,9 @@ html {
   }
   .garment-lift {
     transform: none !important;
+  }
+  .nav-marker {
+    view-transition-name: none;
   }
   ::view-transition-group(*),
   ::view-transition-old(*),

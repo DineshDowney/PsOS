@@ -92,6 +92,31 @@ export function holdFor(ms: number, now = Date.now()): number | null {
 }
 
 /**
+ * Drop the hold entirely.
+ *
+ * The counterpart `holdFor` deliberately only ever moves the deadline FORWARD,
+ * so a 5-minute heartbeat can never cut a 4-hour manual hold short. The cost of
+ * that rule is that a mis-clicked "hold for 4 hours" was unreversible and pinned
+ * the VM up — and billing — for four hours. This is the escape hatch.
+ *
+ * Not the same as powering off: it means "nothing is asking me to stay up", so
+ * the next keepalive check (every 30 min) arms the normal grace-period
+ * shutdown. Interacting with the app afterwards starts holding it again, which
+ * is correct — releasing cancels the manual override, not the app's own
+ * heartbeat.
+ */
+export function releaseHold(): boolean {
+  if (!keepaliveEnabled()) return false;
+  try {
+    fs.rmSync(flagPath(), { force: true });
+    return true;
+  } catch (err) {
+    warnOnce("release", err);
+    return false;
+  }
+}
+
+/**
  * When systemd will power the machine off, in UNIX ms — or null if nothing is
  * armed. The file holds microseconds since the epoch as `USEC=<n>`.
  */

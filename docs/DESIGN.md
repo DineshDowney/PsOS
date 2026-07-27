@@ -8,6 +8,9 @@ be reviewed on its own.
 dated record of how we got here lives in `docs/DECISIONS.md` and is a different kind of
 document. Where a decision has a known cost, the cost is stated rather than buried.
 
+**Prerequisite.** `docs/INTRODUCTION.md` covers what the product is and the five ideas
+everything here follows from. This document assumes you have read it.
+
 **Reading order.** §1–§3 are the load-bearing structure — the layering, the invariants,
 the data model. Everything after that is a subsystem that only makes sense once those are
 in your head. §15 is the honest list of what is weak.
@@ -390,7 +393,7 @@ The difference matters because the incoming cutout inherited whatever margin the
 happened to have. Without the trim-and-recentre, one garment fills its tile and the next
 one floats small in the middle, and a grid of those reads as sloppy. With it, every tile is
 framed identically regardless of upstream framing — and front/back tiles for the same item
-are the same size and position, which is what makes the grid's rotation (§10.3) not jump.
+are the same size and position, which is what makes the grid's rotation (§10.7) not jump.
 
 The tile keeps its transparency as PNG. No background is baked in, so the garment floats on
 whatever the page paints and the page's colour can change without regenerating anything.
@@ -897,9 +900,46 @@ without a per-screen change.
 `--color-accent-fg` exists as a bug fix rather than decoration: three places do
 `hover:bg-accent hover:text-*`, and on burgundy the old value was near-black on dark red.
 
-### 10.2 Motion is CSS-only
+### 10.2 One type scale, and uppercase is rationed
 
-No animation library. Four effects, all of them cheap:
+Everything on screen used to be tracked uppercase: page titles, section headers, buttons,
+field labels, badges, tag chips, list rows, the import stage names. Roughly 48 elements at
+six different tracking values, all between 9px and 12px. The failure mode is not ugliness —
+it is that **when almost every string shouts, uppercase stops meaning "important" and just
+becomes the font**, so nothing on the page outranks anything else.
+
+The scale lives in `@theme` in `globals.css` as `--text-*` tokens, and the rule it enforces
+is a budget:
+
+| Token | Size | Used for |
+|---|---|---|
+| `text-display` | 34px, `.13em`, weight 300 | **uppercase** — the page `<h1>`, and nothing else |
+| `text-nav` | 11px, `.18em`, semibold | **uppercase** — the wordmark and the nav links |
+| `text-heading` | 16px, weight 500 | section headings (`SectionLabel`) |
+| `text-body` | 15px | prose, inputs, chat |
+| `text-meta` | 13px | labels, buttons, list rows, captions — the workhorse |
+| `text-micro` | 11px | badges, provenance marks, tooltips. The floor |
+
+**Three roles keep tracked uppercase — the h1, the wordmark, the nav.** Everything else is
+sentence case. The masthead only reads as a deliberate choice when it is rare.
+
+### 10.3 Three surface tiers
+
+The same failure in another dimension: `border border-line` was on cards, buttons, inputs,
+badges, chips, list rows and 9px sub-buttons alike, so a container and a control were
+visually the same object.
+
+- `.card` — a raised region. Paper, **no border**, a warm two-stop shadow.
+- `.well` — a recessed slot inside a card: thumbnails, progress tracks, empty image frames.
+- `border-line` — demoted to dividers, and to controls that need an edge to read as
+  clickable.
+
+Radius is a flat 2px everywhere it appears. Focus is a real `:focus-visible` accent outline;
+before this, inputs had `outline-none` with only a border change and buttons had nothing.
+
+### 10.4 Motion is CSS-only
+
+No animation library. Everything that moves:
 
 | Effect | Trigger |
 |---|---|
@@ -907,6 +947,9 @@ No animation library. Four effects, all of them cheap:
 | contact shadow deepens in step | `group-hover` |
 | tiles fade in and rise 12px on a 40ms stagger | mount, `--i` set inline |
 | toasts arrive from below | mount |
+| skeletons sweep a highlight left-to-right | while loading |
+| the nav's active bar slides between items | client navigation, via `view-transition-name` |
+| buttons scale to 0.95 | `:active` — reaches touch and mouse alike |
 
 The stagger is **capped at 12** in `ItemCard` — otherwise tile 40 waits 1.6 seconds to
 appear, and a "lively" grid becomes a slow one.
@@ -915,10 +958,45 @@ appear, and a "lively" grid becomes a slow one.
 a `drop-shadow` filter that hugs the alpha silhouette. On an opaque JPEG fallback it would
 outline a rectangle.
 
-One `@media (prefers-reduced-motion: reduce)` block at the bottom of `globals.css` disables
-every one of these. Anything added later that moves belongs in that block too.
+The nav marker is one element with `view-transition-name: nav-marker`; because exactly one
+exists in the DOM at a time, the browser tweens it from the old nav item to the new one for
+free on a client navigation.
 
-### 10.3 The front/back flip has two independent triggers
+One `@media (prefers-reduced-motion: reduce)` block at the bottom of `globals.css` disables
+every one of these, including the view transitions. Anything added later that moves belongs
+in that block too.
+
+### 10.5 Loading states hold the layout
+
+Two screens used to blank the entire page to a bare `<Spinner label="Loading" />` — no
+title, no structure. The rest rendered `data ?? []`, so you got an empty shell that filled
+in. Over Funnel with the VM cold that is 1–3 seconds of nothing.
+
+`Skeleton` / `SkeletonGrid` in `ui.tsx` hold the real geometry instead, and the analytics
+and item pages keep their heading and column structure while they wait. The Power card
+reserves its own height rather than returning `null`, which used to shove the sections below
+it down when the first poll landed.
+
+Mutations report themselves through `Button`'s `loading` prop — a fixed-size inline spinner.
+Every caller previously swapped its own label ("Save changes" → "Saving…"), which loses the
+label exactly when you want to confirm what you pressed and resizes the button more than the
+spinner does. Several mutations reported nothing at all: laundry computed `move.isPending`
+and never used it.
+
+### 10.6 Provenance is visible where you would act on it
+
+§2.1 is the app's load-bearing rule, and the item page showed it on **one field of fourteen**.
+`Field` now takes a `source` prop and renders an `AI` mark for any field the model wrote.
+
+Only `ai` renders. Marking user-owned fields too would badge almost every row and say
+nothing — the useful signal is "this was guessed, check it", and it disappears the moment
+you edit, because that edit flips the field to `user` and AI can never overwrite it again.
+
+The item page also gained a save bar that rides in only when the form is dirty. Save used to
+sit at the bottom of a 14-field column with nothing indicating unsaved work, so editing the
+colour at the top and navigating away lost it silently.
+
+### 10.7 The front/back flip has two independent triggers
 
 Both tile images are stacked with `absolute inset-0` and only **opacity** animates — no
 layout shift, and no risk of a size flash, since §4.4 guarantees both tiles are identically
@@ -931,7 +1009,7 @@ framed.
   devices**, so the two triggers never fight — a timer flipping a tile mid-hover-transition
   reads as a glitch. It also returns early under reduced motion.
 
-### 10.4 Names are hidden, not deleted
+### 10.8 Names are hidden, not deleted
 
 No screen renders `item.name`. `itemLabel(item)` — `primaryColor · subcategory ?? category`
 — is the single definition, with fallbacks through the name to `"Untitled"` so a bare draft
@@ -944,7 +1022,7 @@ matches name/description/brand/subcategory, so hiding it costs no searchability.
 row in the analytics bars. That's why analytics keys its rows by `label + index` rather than
 label — a real collision that would silently drop a bar otherwise.
 
-### 10.5 The item page photo order
+### 10.9 The item page photo order
 
 `orderedPhotos(item)`: generated front, generated back, then the two originals. Each of the
 first two slots falls back through `transparent_*` → `*_cropped`, degrading the same way the
@@ -1008,6 +1086,12 @@ Design points, each of which is a decision:
 - **A deadline, not a touch/mtime.** "Hold for 4 hours" is then the same operation as the
   10-minute heartbeat with a bigger argument, and `holdFor` only ever moves the deadline
   *forward* — so a short beat can never cut a long hold short.
+- **`releaseHold()` / `DELETE /api/system/power` is the escape hatch that rule needs.**
+  Forward-only is correct for the heartbeat and wrong for a mis-click: a stray "hold for 4
+  hours" pinned the machine up, and billing, for four hours with no way back. Releasing is
+  not the same as powering off — it means "nothing is asking me to stay up", so the next
+  30-minute check arms the normal grace shutdown, and using the app afterwards starts holding
+  it again.
 - **`/run/psos` comes from systemd's `RuntimeDirectory=psos`**, owned by the service user.
   That is why nothing in the app needs sudo or a setuid helper. It is tmpfs, so the flag can
   never end up in a `data/` backup and never survives a reboot. Both correct.
@@ -1036,6 +1120,17 @@ Two producers write the flag, and they are different in kind:
   "Any HTTP request counts" is a trap and was the reason idle shutdown was rejected the first
   time: the import screen polls every 2–10s, so a forgotten background tab would hold the
   machine up forever and quietly bill for it. Walk away and it sleeps.
+
+**The Settings card is the only place any of this is visible.** It offers 30 min / 2 h / 4 h,
+a Release, and a countdown that ticks locally against a sampled server-time offset — every
+deadline in the payload is server-time, the device clock can be minutes out, and a number
+that sits still for a 20-second poll and then jumps twenty seconds reads as broken.
+
+There is deliberately **no "power off now" button**. The app runs unprivileged; the only
+thing that can call `shutdown` is the root-run timer script, which fires every 30 minutes. An
+in-app button could therefore only honestly promise "within half an hour", and a control that
+lies is worse than no control. `scripts/vm-stop.cmd` and the Google Cloud app both do it
+properly. Making it real would need a narrow sudoers grant on the VM — not taken.
 
 ### 11.3 Data does not sync
 
@@ -1073,7 +1168,7 @@ Single user, internet-reachable, so the surface is small but not zero.
 
 ## 13. Testing
 
-121 tests across 17 files (`npm test`), plus `npm run typecheck` and `npm run build`.
+129 tests across 18 files (`npm test`), plus `npm run typecheck` and `npm run build`.
 
 What is tested is **pure logic with real decisions in it**:
 
@@ -1092,6 +1187,7 @@ What is tested is **pure logic with real decisions in it**:
 | `upload-queue` | one-at-a-time as a reducer property |
 | `ui` | `itemLabel` fallback chain, `orderedPhotos` ordering |
 | `downscale` | the resize arithmetic, without a browser |
+| `import-progress` | that a degraded stage does not make a live import look dead |
 
 What is **not** tested, honestly:
 
@@ -1102,8 +1198,18 @@ What is **not** tested, honestly:
   the stylist this is deliberate: the boundary around the model is tested, its judgement is
   not, because a test that asserted "these two garments go together" would be encoding the
   same unvalidated taste the engine was criticised for.
-- **All rendering.** No component tests, no visual regression. The look is judged in a
-  browser, which is also the only place it *can* be judged.
+- **All rendering.** No component tests, no visual regression — but the look is no longer
+  judged only by reading code. `npm run shots` (`scripts/shots.ts`) drives the Edge already
+  on the machine through `playwright-core` and writes a full-page PNG of every screen at
+  1440px and 390px. `playwright-core` rather than `playwright` on purpose: the latter
+  downloads its own ~150MB Chromium, and devDependencies are installed on the VM because
+  `npm run build` needs them.
+
+  Two things the harness cannot see. It shoots against the LOCAL database, which holds the
+  seeded placeholder wardrobe — flat shapes on opaque black squares — so the paper tile and
+  the contact shadow, both of which exist for transparent cutouts, are invisible in a shot.
+  And a full-page screenshot renders the whole document, so `position: sticky` elements
+  appear at their static position rather than pinned.
 - **The migration path.** Migrations are applied and verified by hand against a backup.
 
 ---
@@ -1181,7 +1287,7 @@ Ordered by how much they'd cost if they bit.
    two plausible causes (the always-mounted back `<img>` double-fetching, and 23 transparent
    PNGs simply being a lot of bytes) and no measurement distinguishing them. Deliberately
    parked rather than guessed at.
-8. **Labels are not unique** (§10.4). Accepted for a 24-item wardrobe; it degrades as the
+8. **Labels are not unique** (§10.8). Accepted for a 24-item wardrobe; it degrades as the
    catalog grows.
 9. **`?v=` cache-busting depends on `sha256` being populated.** Any writer that inserts an
    image row without a hash produces a permanently-cached URL that never updates. The upsert

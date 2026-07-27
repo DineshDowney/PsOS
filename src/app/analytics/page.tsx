@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
 import type { AnalyticsSummary } from "@/shared/types";
-import { PageTitle, Spinner, itemLabel } from "@/components/ui";
+import { PageTitle, SectionLabel, Skeleton, itemLabel } from "@/components/ui";
 
 /**
  * `title` carries the item name for the hover tooltip. Garment rows are labelled
@@ -19,22 +19,22 @@ interface BarRow {
 function Bars({ title, rows }: { title: string; rows: BarRow[] }) {
   const max = Math.max(1, ...rows.map((r) => r.count));
   return (
-    <div className="border border-line bg-surface p-5">
-      <div className="mb-4 text-[10px] uppercase tracking-[0.25em] text-muted">{title}</div>
+    <div className="card p-5">
+      <SectionLabel className="mb-4">{title}</SectionLabel>
       <div className="flex flex-col gap-2">
-        {rows.length === 0 ? <span className="text-sm text-faint">no data</span> : null}
+        {rows.length === 0 ? <span className="text-meta text-faint">No data yet</span> : null}
         {rows.map((r, i) => (
-          <div key={`${r.label}-${i}`} className="flex items-center gap-3 text-sm">
-            <span className="w-28 shrink-0 truncate text-muted" title={r.title}>
+          <div key={`${r.label}-${i}`} className="flex items-center gap-3 text-meta">
+            <span className="w-28 shrink-0 truncate capitalize text-muted" title={r.title}>
               {r.label}
             </span>
-            <div className="h-2 flex-1 bg-surface-2">
+            <div className="well h-2 flex-1">
               <div
-                className="h-2 bg-accent/70 transition-[width] duration-[220ms] ease-out"
+                className="h-2 rounded-[2px] bg-accent/70 transition-[width] duration-[220ms] ease-out"
                 style={{ width: `${(r.count / max) * 100}%` }}
               />
             </div>
-            <span className="w-8 text-right tabular-nums text-muted">{r.count}</span>
+            <span className="w-8 text-right tabular-nums text-fg">{r.count}</span>
           </div>
         ))}
       </div>
@@ -47,7 +47,27 @@ export default function AnalyticsPage() {
     queryKey: ["analytics"],
     queryFn: () => apiGet<{ analytics: AnalyticsSummary }>("/api/analytics"),
   });
-  if (isLoading || !data) return <Spinner label="Loading" />;
+  // Hold the page's actual shape while it loads. This used to blank the whole
+  // screen to a bare spinner — no title, no grid, nothing to look at.
+  if (isLoading || !data) {
+    return (
+      <div>
+        <PageTitle sub="Reading your wear history">Analytics</PageTitle>
+        <div className="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="card p-5">
+              <Skeleton className="mb-4 h-4 w-28" />
+              <div className="flex flex-col gap-2">
+                {Array.from({ length: 5 }, (_, j) => (
+                  <Skeleton key={j} className="h-4 w-full" />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
   const a = data.analytics;
 
   return (

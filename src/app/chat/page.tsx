@@ -112,7 +112,7 @@ export default function ChatPage() {
             <button
               key={s.id}
               onClick={() => setSessionId(s.id)}
-              className={`truncate border px-3 py-2 text-left text-xs ${
+              className={`truncate rounded-[2px] border px-3 py-2 text-left text-meta transition-colors ${
                 s.id === sessionId ? "border-accent text-fg" : "border-line text-muted"
               }`}
             >
@@ -121,24 +121,24 @@ export default function ChatPage() {
           ))}
         </aside>
 
-        <div className="flex min-h-0 flex-1 flex-col border border-line bg-surface">
+        <div className="card flex min-h-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto p-6">
             {messages.length === 0 && !busy ? (
-              <p className="text-sm text-muted">
+              <p className="text-meta text-muted">
                 Try: “What should I wear to a smart-casual dinner?” · “What's in the laundry?” ·
                 “Plan my outfits for next week” · “Pack me for 5 days in Goa”.
               </p>
             ) : null}
             {messages.map((m) => (
               <div key={m.id} className={`mb-5 ${m.role === "user" ? "text-fg" : "text-muted"}`}>
-                <div className="mb-1 text-[9px] uppercase tracking-[0.25em] text-faint">
+                <div className="mb-1 text-micro font-medium text-faint">
                   {m.role === "user" ? "You" : "Stylist"}
                 </div>
                 {m.content.map((b, i) =>
                   b.type === "text" ? (
-                    <p key={i} className="whitespace-pre-wrap text-sm leading-relaxed">{b.text}</p>
+                    <p key={i} className="whitespace-pre-wrap text-body">{b.text}</p>
                   ) : (
-                    <div key={i} className="my-1 text-[10px] uppercase tracking-[0.2em] text-faint">
+                    <div key={i} className="my-1 text-micro text-faint">
                       ⚙ {b.toolName?.replace(/_/g, " ")}
                     </div>
                   ),
@@ -147,13 +147,13 @@ export default function ChatPage() {
             ))}
             {busy ? (
               <div className="mb-5 text-muted">
-                <div className="mb-1 text-[9px] uppercase tracking-[0.25em] text-faint">Stylist</div>
+                <div className="mb-1 text-micro font-medium text-faint">Stylist</div>
                 {liveTools.map((t, i) => (
-                  <div key={i} className="my-1 text-[10px] uppercase tracking-[0.2em] text-faint">
+                  <div key={i} className="my-1 text-micro text-faint">
                     ⚙ {t.replace(/_/g, " ")}
                   </div>
                 ))}
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                <p className="whitespace-pre-wrap text-body">
                   {live || "…"}
                   <span className="animate-pulse">▍</span>
                 </p>
@@ -170,7 +170,7 @@ export default function ChatPage() {
               onKeyDown={(e) => e.key === "Enter" && send()}
               disabled={busy}
             />
-            <Button variant="solid" onClick={send} disabled={busy}>
+            <Button variant="solid" onClick={send} loading={busy}>
               Send
             </Button>
           </div>

@@ -21,10 +21,17 @@ const STATUS_OPTIONS = [
   { value: "unavailable", label: "Unavailable" },
 ] as const;
 
-// 240 where this used to be 160: garments are the point of the screen, so they
-// get the room. ~4 columns on a desktop, 2 on a phone. Thumbnails are generated
-// at 640px square, so there is resolution to spare even at 2x.
-const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-x-7 gap-y-12";
+/*
+ * 240px tiles on desktop — garments are the point of the screen, so they get the
+ * room, and the 640px thumbnails have resolution to spare even at 2x.
+ *
+ * The phone case is a hard `grid-cols-2` rather than the auto-fill track,
+ * because auto-fill with a 240px minimum resolves to ONE column at 390px: the
+ * wardrobe became a single stack of full-width garments on the device it is
+ * used on most. Two 171px tiles is the right density there.
+ */
+const gridClass =
+  "grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-[repeat(auto-fill,minmax(240px,1fr))] sm:gap-x-7 sm:gap-y-12";
 
 export function WardrobeGrid({
   initialItems,
@@ -92,19 +99,30 @@ export function WardrobeGrid({
           value={category}
           onChange={setCategory}
         />
+        {/*
+         * The two text filters are sized by their WRAPPER. `inputClass` carries
+         * `w-full`, and appending `w-28` to it does nothing — Tailwind resolves
+         * that pair by stylesheet order, not class-attribute order, so the color
+         * box used to render full-width and push the status control onto its
+         * own row.
+         */}
         <div className="flex flex-wrap items-center gap-3">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search"
-            className={`${inputClass} max-w-56`}
-          />
-          <input
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            placeholder="Color"
-            className={`${inputClass} w-28`}
-          />
+          <div className="w-full sm:w-56">
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search"
+              className={inputClass}
+            />
+          </div>
+          <div className="w-32">
+            <input
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              placeholder="Color"
+              className={inputClass}
+            />
+          </div>
           <SegmentedControl options={STATUS_OPTIONS} value={status} onChange={setStatus} />
         </div>
       </div>
@@ -128,10 +146,15 @@ export function WardrobeGrid({
         </div>
       )}
 
+      {/*
+       * Bottom-RIGHT. It used to sit at left-[15rem] (240px) while the content
+       * column starts at 264px, so on desktop it overlapped the first tile of
+       * the grid.
+       */}
       <Link
         href="/import"
         aria-label="Import an item"
-        className="fixed bottom-6 left-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-fg text-2xl font-light text-bg transition-colors hover:bg-accent hover:text-accent-fg md:bottom-10 md:left-[15rem]"
+        className="fixed bottom-6 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-fg text-2xl font-light text-bg shadow-lg transition-[background-color,transform] duration-150 hover:bg-accent hover:text-accent-fg active:scale-95 md:bottom-10 md:right-10"
       >
         +
       </Link>

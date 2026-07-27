@@ -12,12 +12,12 @@ import {
 } from "@/shared/types";
 import {
   Button,
+  ConfirmDialog,
   Field,
   PageTitle,
   SectionLabel,
   SegmentedControl,
-  Spinner,
-  StatusBadge,
+  Skeleton,
   inputClass,
   garmentShadowClass,
   itemLabel,
@@ -65,7 +65,7 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
 
   return (
     <div
-      className="group relative aspect-square w-full select-none bg-surface"
+      className="card group relative aspect-square w-full select-none overflow-hidden"
       onTouchStart={(e) => {
         touchStartX.current = e.touches[0]?.clientX ?? null;
       }}
@@ -105,7 +105,7 @@ function RotatingPhotos({ images, name }: { images: Item["images"]; name: string
               aria-label={label}
               onClick={() => go(dir)}
               className={clsx(
-                "absolute top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center",
+                "absolute top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full",
                 "border border-line bg-bg/80 text-lg leading-none text-muted backdrop-blur-sm",
                 "transition-[opacity,color,border-color] duration-200 hover:border-fg hover:text-fg",
                 "active:scale-95 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
@@ -216,25 +216,26 @@ function RegenPanel({ item }: { item: Item }) {
   }, [job, sides, toast, qc, item.id]);
 
   return (
-    <div className="border border-line">
+    <div className="rounded-[2px] border border-line">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between px-4 py-3 text-[10px] uppercase tracking-[0.08em] text-muted transition-colors hover:text-fg"
+        aria-expanded={open}
+        className="flex w-full items-center justify-between px-4 py-3 text-meta text-muted transition-colors hover:text-fg"
       >
         Regenerate images
         <span className={clsx("transition-transform duration-200", open && "rotate-45")}>+</span>
       </button>
 
       {open ? (
-        <div className="flex flex-col gap-4 border-t border-line p-4">
+        <div className="fade-in flex flex-col gap-4 border-t border-line p-4">
           <SegmentedControl
             options={REGEN_SIDE_OPTIONS.filter((o) => hasBack || o.value === "front")}
             value={hasBack ? choice : "front"}
             onChange={setChoice}
           />
           {!hasBack ? (
-            <p className="text-[10px] text-faint">
+            <p className="text-micro text-faint">
               No back photo on file — only the front can be regenerated.
             </p>
           ) : null}
@@ -249,21 +250,15 @@ function RegenPanel({ item }: { item: Item }) {
           </Field>
 
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[10px] uppercase tracking-[0.08em] text-faint">
+            <span className="text-micro text-faint">
               {running
                 ? job?.status === "queued"
                   ? "Queued…"
                   : "Generating — this takes 15-40s"
                 : "Replaces the current images"}
             </span>
-            <Button
-              variant="solid"
-              disabled={running}
-              onClick={() => start.mutate()}
-            >
-              {running
-                ? "Working…"
-                : `Regenerate · ~$${(sides.length * COST_PER_SIDE).toFixed(2)}`}
+            <Button variant="solid" loading={running} onClick={() => start.mutate()}>
+              {`Regenerate · ~$${(sides.length * COST_PER_SIDE).toFixed(2)}`}
             </Button>
           </div>
         </div>
@@ -272,21 +267,63 @@ function RegenPanel({ item }: { item: Item }) {
   );
 }
 
-function Provenance({ item, field }: { item: Item; field: string }) {
-  const src = item.fieldSources[field];
-  if (!src) return null;
-  return (
-    <span className={`ml-2 text-[9px] uppercase tracking-[0.08em] ${src === "user" ? "text-ok" : "text-faint"}`}>
-      {src}
-    </span>
-  );
-}
-
 const STATUS_OPTIONS = [
   { value: "available", label: "Available" },
   { value: "laundry", label: "Laundry" },
   { value: "unavailable", label: "Unavailable" },
 ] as const;
+
+/**
+ * The editable fields, in one place, so the form's initial values and its
+ * dirty-check can never drift apart. Everything is a string because that is
+ * what an <input> holds; `save` converts back at the boundary.
+ */
+function formValues(item: Item): Record<string, string> {
+  return {
+    name: item.name ?? "",
+    category: item.category ?? "",
+    subcategory: item.subcategory ?? "",
+    description: item.description ?? "",
+    notes: item.notes ?? "",
+    primaryColor: item.primaryColor ?? "",
+    colorDetail: item.colorDetail ?? "",
+    pattern: item.pattern ?? "",
+    fit: item.fit ?? "",
+    material: item.material ?? "",
+    brand: item.brand ?? "",
+    size: item.size ?? "",
+    formality: item.formality ?? "",
+    price: item.price != null ? String(item.price) : "",
+  };
+}
+
+function ItemSkeleton() {
+  return (
+    <div>
+      <Skeleton className="mb-3 h-3 w-16" />
+      <Skeleton className="mb-10 h-10 w-80" />
+      <div className="grid gap-10 lg:grid-cols-[minmax(300px,440px)_1fr]">
+        <div className="flex flex-col gap-5">
+          <Skeleton className="aspect-square w-full" />
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-10 w-48" />
+        </div>
+        <div className="flex max-w-2xl flex-col gap-8">
+          {Array.from({ length: 4 }, (_, group) => (
+            <div key={group} className="flex flex-col gap-4">
+              <Skeleton className="h-4 w-24" />
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {Array.from({ length: 2 }, (_, f) => (
+                  <Skeleton key={f} className="h-16 w-full" />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function ItemPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -313,25 +350,12 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
   const item = data?.item;
   const [form, setForm] = useState<Record<string, string>>({});
   const [tagInput, setTagInput] = useState("");
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   useEffect(() => {
     if (!item) return;
-    setForm({
-      name: item.name ?? "",
-      category: item.category ?? "",
-      subcategory: item.subcategory ?? "",
-      description: item.description ?? "",
-      notes: item.notes ?? "",
-      primaryColor: item.primaryColor ?? "",
-      colorDetail: item.colorDetail ?? "",
-      pattern: item.pattern ?? "",
-      fit: item.fit ?? "",
-      material: item.material ?? "",
-      brand: item.brand ?? "",
-      size: item.size ?? "",
-      formality: item.formality ?? "",
-      price: item.price != null ? String(item.price) : "",
-    });
+    setForm(formValues(item));
   }, [item]);
 
   const patch = useMutation({
@@ -378,21 +402,38 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
     },
   });
 
-  if (isLoading || !item) return <Spinner label="Loading" />;
+  const confirmImport = useMutation({
+    mutationFn: () => apiSend(`/api/items/${id}/confirm`, "POST"),
+    onSuccess: () => {
+      toast("info", "Added to wardrobe");
+      qc.invalidateQueries();
+    },
+  });
+
+  if (isLoading || !item) return <ItemSkeleton />;
 
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  /*
+   * Unsaved changes. Save used to sit at the bottom of a 14-field column with
+   * nothing anywhere saying the form had been touched — you could edit the
+   * colour at the top, navigate away, and lose it silently.
+   */
+  const saved = formValues(item);
+  const dirty = Object.keys(saved).some((k) => (form[k] ?? "") !== saved[k]);
+  const src = (field: string) => item.fieldSources[field] as "ai" | "user" | undefined;
+
   return (
-    <div>
+    <div className={dirty ? "pb-24" : undefined}>
       <PageTitle eyebrow={item.state === "draft" ? "Draft — review and confirm" : "Item"}>
         {itemLabel(item)}
       </PageTitle>
 
       {dupes && (dupes.exact.length > 0 || dupes.similar.length > 0) ? (
-        <div className="mb-8 max-w-2xl border-l-2 border-danger pl-4 text-xs">
-          <SectionLabel className="text-danger">possible duplicate</SectionLabel>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-muted">
+        <div className="mb-8 max-w-2xl rounded-[2px] border-l-2 border-danger bg-surface py-3 pl-4 pr-3">
+          <div className="text-meta font-medium text-danger">Possible duplicate</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-meta text-muted">
             {dupes.exact.map((d) => (
               <Link
                 key={d.id}
@@ -417,9 +458,13 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
         </div>
       ) : null}
 
-      {/* 420 -> 480: "make the item image bigger" applied here too, not just the grid */}
-      <div className="grid gap-10 lg:grid-cols-[minmax(300px,480px)_1fr]">
-        <div className="flex flex-col gap-5">
+      <div className="grid gap-10 lg:grid-cols-[minmax(300px,440px)_1fr]">
+        {/*
+         * Sticky on desktop. The photo used to scroll away while you worked
+         * through 14 fields, leaving the left half of a 1440px page empty and
+         * the garment — the thing you are describing — off screen.
+         */}
+        <div className="flex flex-col gap-5 lg:sticky lg:top-8 lg:self-start">
           {/*
            * Studio regenerations first, raw photos last (Dinesh, 2026-07-26:
            * "the first two photos should be regen ones, then the og") — see
@@ -427,34 +472,34 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
            */}
           <RotatingPhotos name={itemLabel(item)} images={orderedPhotos(item)} />
           {item.images.length === 0 ? (
-            <div className="flex aspect-square items-center justify-center text-faint">
-              no photos
+            <div className="well flex aspect-square items-center justify-center text-meta text-faint">
+              No photos
             </div>
           ) : null}
 
-          <div className="flex flex-wrap items-center gap-3">
-            <StatusBadge status={item.status} />
-            <span className="text-xs text-muted">
-              worn {item.wearCount}× {item.lastWornAt ? `· last ${item.lastWornAt.slice(0, 10)}` : ""}
+          <div className="flex items-center justify-between gap-3">
+            <SegmentedControl
+              options={STATUS_OPTIONS}
+              value={item.status}
+              onChange={(s) =>
+                patch.mutate({ status: s }, { onSuccess: () => toast("info", `Marked ${s}`) })
+              }
+            />
+            <span className="shrink-0 text-meta tabular-nums text-muted">
+              Worn {item.wearCount}×
+              {item.lastWornAt ? ` · ${item.lastWornAt.slice(0, 10)}` : ""}
             </span>
           </div>
-          <SegmentedControl
-            options={STATUS_OPTIONS}
-            value={item.status}
-            onChange={(s) =>
-              patch.mutate({ status: s }, { onSuccess: () => toast("info", `Marked ${s}`) })
-            }
-          />
-          <div className="flex gap-2">
-            <Button onClick={() => wearToday.mutate()}>Wore it today</Button>
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => wearToday.mutate()} loading={wearToday.isPending}>
+              Wore it today
+            </Button>
             {item.state === "draft" ? (
               <Button
                 variant="solid"
-                onClick={async () => {
-                  await apiSend(`/api/items/${id}/confirm`, "POST");
-                  toast("info", "Added to wardrobe");
-                  qc.invalidateQueries();
-                }}
+                onClick={() => confirmImport.mutate()}
+                loading={confirmImport.isPending}
               >
                 Confirm import
               </Button>
@@ -466,26 +511,18 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
 
         <div className="flex max-w-2xl flex-col gap-8">
           <div className="flex flex-col gap-4">
-            <SectionLabel>Name</SectionLabel>
-            <Field label="Name">
-              <span>
-                <input className={inputClass} value={form.name ?? ""} onChange={set("name")} />
-                <Provenance item={item} field="name" />
-              </span>
-            </Field>
-          </div>
-
-          <div className="flex flex-col gap-4">
             <SectionLabel>Category</SectionLabel>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Category">
+              <Field label="Category" source={src("category")}>
                 <select className={inputClass} value={form.category ?? ""} onChange={set("category")}>
                   <option value="">—</option>
                   {CATEGORIES.map((c) => <option key={c} value={c}>{c.replace("_", " ")}</option>)}
                 </select>
               </Field>
-              <Field label="Subcategory"><input className={inputClass} value={form.subcategory ?? ""} onChange={set("subcategory")} /></Field>
-              <Field label="Formality">
+              <Field label="Subcategory" source={src("subcategory")}>
+                <input className={inputClass} value={form.subcategory ?? ""} onChange={set("subcategory")} />
+              </Field>
+              <Field label="Formality" source={src("formality")}>
                 <select className={inputClass} value={form.formality ?? ""} onChange={set("formality")}>
                   <option value="">—</option>
                   {FORMALITIES.map((f) => <option key={f} value={f}>{f.replace("_", " ")}</option>)}
@@ -497,29 +534,51 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
           <div className="flex flex-col gap-4">
             <SectionLabel>Colors</SectionLabel>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Primary color"><input className={inputClass} value={form.primaryColor ?? ""} onChange={set("primaryColor")} /></Field>
-              <Field label="Color detail"><input className={inputClass} value={form.colorDetail ?? ""} onChange={set("colorDetail")} /></Field>
-              <Field label="Pattern"><input className={inputClass} value={form.pattern ?? ""} onChange={set("pattern")} /></Field>
+              <Field label="Primary color" source={src("primaryColor")}>
+                <input className={inputClass} value={form.primaryColor ?? ""} onChange={set("primaryColor")} />
+              </Field>
+              <Field label="Color detail" source={src("colorDetail")}>
+                <input className={inputClass} value={form.colorDetail ?? ""} onChange={set("colorDetail")} />
+              </Field>
+              <Field label="Pattern" source={src("pattern")}>
+                <input className={inputClass} value={form.pattern ?? ""} onChange={set("pattern")} />
+              </Field>
             </div>
           </div>
 
           <div className="flex flex-col gap-4">
             <SectionLabel>Details</SectionLabel>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Fit"><input className={inputClass} value={form.fit ?? ""} onChange={set("fit")} /></Field>
-              <Field label="Material"><input className={inputClass} value={form.material ?? ""} onChange={set("material")} /></Field>
-              <Field label="Brand"><input className={inputClass} value={form.brand ?? ""} onChange={set("brand")} /></Field>
-              <Field label="Size"><input className={inputClass} value={form.size ?? ""} onChange={set("size")} /></Field>
-              <Field label="Price"><input className={inputClass} type="number" value={form.price ?? ""} onChange={set("price")} /></Field>
+              <Field label="Fit" source={src("fit")}>
+                <input className={inputClass} value={form.fit ?? ""} onChange={set("fit")} />
+              </Field>
+              <Field label="Material" source={src("material")}>
+                <input className={inputClass} value={form.material ?? ""} onChange={set("material")} />
+              </Field>
+              <Field label="Brand" source={src("brand")}>
+                <input className={inputClass} value={form.brand ?? ""} onChange={set("brand")} />
+              </Field>
+              <Field label="Size" source={src("size")}>
+                <input className={inputClass} value={form.size ?? ""} onChange={set("size")} />
+              </Field>
+              <Field label="Price" source={src("price")}>
+                <input className={inputClass} type="number" value={form.price ?? ""} onChange={set("price")} />
+              </Field>
+              <Field label="Name" source={src("name")} hint="not shown on screen">
+                <input className={inputClass} value={form.name ?? ""} onChange={set("name")} />
+              </Field>
             </div>
           </div>
 
-          <Field label="Description" hint={item.fieldSources.description === "user" ? "yours" : "AI draft — edits stick"}>
-            <textarea className={`${inputClass} min-h-20`} value={form.description ?? ""} onChange={set("description")} />
-          </Field>
-          <Field label="Notes" hint="private, never touched by AI">
-            <textarea className={`${inputClass} min-h-16`} value={form.notes ?? ""} onChange={set("notes")} />
-          </Field>
+          <div className="flex flex-col gap-4">
+            <SectionLabel>Notes</SectionLabel>
+            <Field label="Description" source={src("description")}>
+              <textarea className={`${inputClass} min-h-20`} value={form.description ?? ""} onChange={set("description")} />
+            </Field>
+            <Field label="Your notes" hint="private, never touched by AI">
+              <textarea className={`${inputClass} min-h-16`} value={form.notes ?? ""} onChange={set("notes")} />
+            </Field>
+          </div>
 
           <div className="flex flex-col gap-4">
             <SectionLabel>Tags</SectionLabel>
@@ -529,8 +588,8 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
                   <button
                     key={t.tag}
                     onClick={() => patch.mutate({ removeTag: t.tag })}
-                    title="click to remove"
-                    className="border border-line px-2 py-0.5 text-xs tracking-[0.08em] text-muted hover:border-danger hover:text-danger"
+                    title="Click to remove"
+                    className="rounded-[2px] border border-line px-2 py-0.5 text-meta text-muted transition-colors hover:border-danger hover:text-danger"
                   >
                     {t.tag} ×
                   </button>
@@ -551,34 +610,68 @@ export default function ItemPage({ params }: { params: Promise<{ id: string }> }
             </div>
           </div>
 
-          <div className="mt-2 flex items-center justify-between border-t border-line pt-5">
-            <Button
-              variant="danger"
-              onClick={async () => {
-                if (!confirm("Archive this item? It disappears from the catalog.")) return;
-                await apiSend(`/api/items/${id}`, "DELETE");
-                router.push("/wardrobe");
-              }}
-            >
-              Archive
-            </Button>
-            <Button variant="solid" onClick={save} disabled={patch.isPending}>
-              {patch.isPending ? "Saving…" : "Save changes"}
-            </Button>
-          </div>
-
           {wearData?.events.length ? (
-            <div className="border-t border-line pt-4">
+            <div className="border-t border-line pt-5">
               <SectionLabel className="mb-2">Wear history</SectionLabel>
-              <ul className="space-y-1 text-sm text-muted">
+              <ul className="flex flex-col gap-1 text-meta text-muted">
                 {wearData.events.slice(0, 10).map((e) => (
-                  <li key={e.id}>{e.wornOn}{e.occasion ? ` — ${e.occasion}` : ""}</li>
+                  <li key={e.id} className="tabular-nums">
+                    {e.wornOn}
+                    {e.occasion ? ` — ${e.occasion}` : ""}
+                  </li>
                 ))}
               </ul>
             </div>
           ) : null}
+
+          <div className="border-t border-line pt-5">
+            <Button variant="danger" onClick={() => setConfirmArchive(true)}>
+              Archive
+            </Button>
+          </div>
         </div>
       </div>
+
+      {/*
+       * The save bar rides in only when something has changed, and clears the
+       * desktop sidebar rather than sitting on top of it.
+       */}
+      {dirty ? (
+        <div className="toast-in fixed inset-x-0 bottom-0 z-30 border-t border-line bg-bg/95 backdrop-blur-sm md:left-52">
+          <div className="flex items-center justify-between gap-4 px-4 py-3 md:px-14">
+            <span className="text-meta text-muted">Unsaved changes</span>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => setForm(saved)}>
+                Discard
+              </Button>
+              <Button variant="solid" onClick={save} loading={patch.isPending}>
+                Save changes
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <ConfirmDialog
+        open={confirmArchive}
+        danger
+        busy={archiving}
+        title="Archive this item?"
+        body="It disappears from the catalog and from outfit suggestions. The photos and wear history are kept."
+        confirmLabel="Archive"
+        onCancel={() => setConfirmArchive(false)}
+        onConfirm={async () => {
+          setArchiving(true);
+          try {
+            await apiSend(`/api/items/${id}`, "DELETE");
+            router.push("/wardrobe");
+          } catch (e) {
+            toast("error", e instanceof Error ? e.message : "Could not archive");
+            setArchiving(false);
+            setConfirmArchive(false);
+          }
+        }}
+      />
     </div>
   );
 }

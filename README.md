@@ -1,6 +1,10 @@
 # Personal Stylist OS
 
-Local-first wardrobe management + AI stylist. Single user, everything on disk, no cloud.
+Local-first wardrobe management + AI stylist. Single user, everything on disk, no cloud in
+the data path.
+
+**New here? Read [`docs/INTRODUCTION.md`](docs/INTRODUCTION.md)** — what this is, why it
+exists, and the ideas the code follows from. This page is just how to run it.
 
 ## Run
 
@@ -10,41 +14,60 @@ npm run seed     # optional: 14 placeholder items so screens aren't empty
 npm run dev      # → http://localhost:3000
 ```
 
-AI features (import metadata extraction, Stylist Chat) run through the **Claude Agent SDK**
-using this machine's existing **Claude Code login** — no API key needed. If AI calls fail,
-make sure Claude Code is logged in.
+`predev` applies migrations and recovers interrupted jobs before the server starts; a failure
+there aborts the launch rather than serving against a stale schema.
+
+## AI providers
+
+Two, split by capability — see `docs/DESIGN.md` §7.1.
+
+- **Gemini via Vertex AI** does everything that looks at a garment: metadata extraction,
+  studio-shot generation, outfit ranking. Needs credentials (env key locally, the VM's own
+  service account in production). Everything degrades if it is unreachable — imports still
+  produce a reviewable draft.
+- **Claude via the Agent SDK** does Stylist Chat only, riding this machine's existing
+  **Claude Code login** — no API key. Chat therefore works on a laptop with Claude Code
+  installed, and not on the VM.
 
 ## Screens
 
-Wardrobe (search/filter grid) · Import (photo → AI metadata → review → confirm) ·
-Outfit Studio (engine-generated suggestions, save, wear) · Calendar (plan ahead, mark worn) ·
-Laundry (availability board) · Analytics · Stylist Chat (Claude with live wardrobe tools) · Settings (model override, backup export, activity log).
+Wardrobe (search/filter grid) · Import (photos → 7-stage pipeline → review → confirm) ·
+Item (edit, provenance, regenerate images) · Outfit Studio (engine shortlists, a model ranks) ·
+Calendar (plan ahead, mark worn) · Laundry (availability board) · Analytics ·
+Stylist Chat (Claude with live wardrobe tools) · Settings (models, VM power, backup, activity log).
 
 ## Architecture (short version)
 
-- **Next.js 15 full-stack** (App Router). All backend logic in `src/server/**`, thin route
-  handlers in `src/app/api/**`, screens in `src/app/**`.
-- **SQLite** (`data/stylist.db`, WAL) via Drizzle; migrations in `drizzle/`, applied at boot.
-  Images under `data/images/<itemId>/`. `data/` = the entire app state; back it up via
-  Settings → Export.
-- **Provenance**: every editable field tracks `ai` vs `user` source
-  (`src/server/services/provenance.ts`). AI may only fill fields the user hasn't touched —
-  user edits are never overwritten.
-- **Outfit engine** (`src/server/engine/`): deterministic, unit-tested scoring
-  (color harmony / formality / freshness / rotation / repeat-penalty + diversity). Chat's
-  `suggest_outfits` tool calls the same engine.
-- **Import pipeline** (`src/server/imports/pipeline.ts`): save → background removal
-  (swappable, cosmetic-only) → thumbnail → dominant colors → AI metadata. Per-stage status
-  in DB; only photo-save failures are fatal.
-- **AI layer** (`src/server/ai/`): Agent SDK behind one wrapper (`agent.ts`); wardrobe tools
-  exposed to chat via an in-process MCP server (`tools.ts`).
+- **Next.js 15 full-stack** (App Router). All backend logic in `src/server/**`, thin
+  zod-validated route handlers in `src/app/api/**`, screens in `src/app/**`.
+- **SQLite** (`data/stylist.db`, WAL) via Drizzle; migrations in `drizzle/`, applied by
+  `scripts/boot.ts` before the server accepts a request. Images under
+  `data/images/<itemId>/`. `data/` is the entire app state — back it up via Settings → Export.
+- **Provenance**: every editable field tracks `ai` vs `user` source. AI may only fill fields
+  you have never touched; your edits are never overwritten. All writes go through
+  `services/catalog.ts` or `applyInferenceToItem` — never a raw `UPDATE`.
+- **Import pipeline** (`src/server/imports/pipeline.ts`): save → garment_box →
+  image_generation → background_removal → colors → ai_metadata → thumbnail. Only `save` is
+  fatal; every other stage degrades and records why.
+- **Cutouts** (`src/server/imaging/cutout-ladder.ts`): native alpha → key the flat backdrop →
+  regenerate once against magenta and key that. No ML segmentation, no native ML runtime.
+- **Outfits**: `engine/outfit-engine.ts` produces wearable candidates; `services/outfit-stylist.ts`
+  lets Gemini reorder and explain them, discarding anything that wasn't a candidate.
 
 ## Commands
 
 | Command | What |
 |---|---|
-| `npm run dev` | Start the app |
-| `npm test` | Unit tests (engine, provenance, colors) |
+| `npm run dev` | Start the app (runs migrations + job recovery first) |
+| `npm test` | Unit tests |
 | `npm run typecheck` | Strict TS check |
+| `npm run build` | Production build |
+| `npm run shots` | Screenshot every screen at 1440px and 390px (needs `npm run dev` running) |
 | `npm run db:generate` | Regenerate migrations after schema changes |
 | `npm run seed` | Seed placeholder wardrobe (no-op if items exist) |
+
+## Deployment
+
+Runs on a GCP VM (`psos-1`) as a systemd service behind Tailscale Funnel — no inbound port.
+The VM powers itself off when idle. Units, keepalive script and install steps are in
+`deploy/vm/`.

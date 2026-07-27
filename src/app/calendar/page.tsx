@@ -81,7 +81,7 @@ export default function CalendarPage() {
 
       <div className="mb-6 flex items-center gap-4">
         <Button onClick={prev}>←</Button>
-        <span className="w-48 text-center text-sm uppercase tracking-[0.2em]">{monthLabel}</span>
+        <span className="w-48 text-center text-heading tabular-nums">{monthLabel}</span>
         <Button onClick={next}>→</Button>
         <Button
           variant="ghost"
@@ -98,7 +98,7 @@ export default function CalendarPage() {
         {WEEKDAYS.map((d) => (
           <div
             key={d}
-            className="border-b border-r border-line bg-surface px-2 py-2 text-center text-[10px] uppercase tracking-[0.25em] text-muted"
+            className="border-b border-r border-line bg-surface-2 px-2 py-2 text-center text-micro font-medium text-muted"
           >
             {d}
           </div>
@@ -119,12 +119,12 @@ export default function CalendarPage() {
               }`}
             >
               <div className="mb-1 flex items-center justify-between">
-                <span className={`text-xs ${isToday ? "text-accent" : "text-muted"}`}>
+                <span className={`text-meta tabular-nums ${isToday ? "font-semibold text-accent" : "text-muted"}`}>
                   {dayNum}
                 </span>
                 <button
                   onClick={() => setPickerDate(date)}
-                  className="border border-line px-1.5 text-xs leading-5 text-faint opacity-0 transition-opacity hover:border-accent hover:text-fg group-hover:opacity-100"
+                  className="rounded-[2px] border border-line px-1.5 text-meta leading-5 text-faint opacity-0 transition-opacity hover:border-accent hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
                   title="Plan an outfit"
                 >
                   +
@@ -132,9 +132,9 @@ export default function CalendarPage() {
               </div>
               <div className="flex flex-col gap-1.5">
                 {dayPlans.map((p) => (
-                  <div key={p.id} className="border border-line/70 bg-bg p-1.5">
+                  <div key={p.id} className="rounded-[2px] border border-line/70 bg-bg p-1.5">
                     <div
-                      className={`truncate text-[11px] leading-tight ${
+                      className={`truncate text-micro leading-tight ${
                         p.status === "skipped" ? "text-faint line-through" : "text-fg"
                       }`}
                       title={outfitLabel(p.outfit)}
@@ -142,29 +142,29 @@ export default function CalendarPage() {
                       {outfitLabel(p.outfit)}
                     </div>
                     {p.status === "worn" ? (
-                      <div className="mt-0.5 text-[9px] uppercase tracking-[0.2em] text-ok">worn</div>
+                      <div className="mt-0.5 text-micro text-ok">Worn</div>
                     ) : p.status === "planned" ? (
                       <div className="mt-1 flex gap-2">
                         <button
-                          className="text-[9px] uppercase tracking-[0.15em] text-ok hover:underline"
+                          className="text-micro text-ok hover:underline"
                           onClick={() => setStatus.mutate({ id: p.id, status: "worn" })}
                         >
-                          worn
+                          Worn
                         </button>
                         <button
-                          className="text-[9px] uppercase tracking-[0.15em] text-faint hover:underline"
+                          className="text-micro text-faint hover:underline"
                           onClick={() => setStatus.mutate({ id: p.id, status: "skipped" })}
                         >
-                          skip
+                          Skip
                         </button>
                         <button
-                          className="text-[9px] uppercase tracking-[0.15em] text-danger hover:underline"
+                          className="text-micro text-danger hover:underline"
                           onClick={async () => {
                             await apiSend(`/api/plans/${p.id}`, "DELETE");
                             qc.invalidateQueries({ queryKey: ["plans"] });
                           }}
                         >
-                          remove
+                          Remove
                         </button>
                       </div>
                     ) : null}
@@ -184,13 +184,11 @@ export default function CalendarPage() {
           onClick={() => setPickerDate(null)}
         >
           <div
-            className="w-full max-w-md border border-line bg-surface p-6 shadow-[0_18px_50px_rgb(25_24_22/0.12)]"
+            className="card w-full max-w-md p-6 shadow-[0_18px_50px_rgb(25_24_22/0.18)]"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
-              <span className="text-xs uppercase tracking-[0.25em] text-muted">
-                Plan for {pickerDate}
-              </span>
+              <h2 className="text-heading text-fg">Plan for {pickerDate}</h2>
               <button
                 className="text-muted hover:text-fg"
                 onClick={() => setPickerDate(null)}
@@ -200,7 +198,7 @@ export default function CalendarPage() {
               </button>
             </div>
             {outfits.length === 0 ? (
-              <p className="text-sm text-muted">
+              <p className="text-meta text-muted">
                 No saved outfits yet. Create one in the{" "}
                 <Link href="/outfits" className="text-fg underline">
                   Outfit Studio
@@ -214,7 +212,7 @@ export default function CalendarPage() {
                     key={o.id}
                     disabled={createPlan.isPending}
                     onClick={() => createPlan.mutate({ planDate: pickerDate, outfitId: o.id })}
-                    className="border border-line px-3 py-2 text-left text-sm text-muted hover:border-accent hover:text-fg disabled:opacity-40"
+                    className="rounded-[2px] border border-line px-3 py-2 text-left text-meta text-muted transition-colors hover:border-accent hover:text-fg disabled:opacity-40"
                   >
                     {outfitLabel(o)}
                   </button>

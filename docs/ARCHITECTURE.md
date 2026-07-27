@@ -4,6 +4,9 @@ Local-first, single-user Next.js 15 app. One process, one folder of state (`data
 A production copy runs on GCP VM `psos-1` (systemd service, reachable over Tailscale
 Funnel — no inbound port).
 
+**New to the project? Read `docs/INTRODUCTION.md` first** — what psos is, why it exists, and
+the five ideas the code follows from.
+
 **This page is the map. `docs/DESIGN.md` is the territory** — it explains how every
 component connects to every other and why each choice was made. Read this to find
 something; read that to understand it. `docs/DECISIONS.md` is the dated record of how we
@@ -14,8 +17,9 @@ got here.
 ```
 src/
   app/                 screens (App Router) + thin zod-validated route handlers in app/api/**
-  components/          UI primitives (ui.tsx) + providers (react-query, toasts)
+  components/          UI primitives (ui.tsx) + nav + providers (react-query, toasts)
   lib/api.ts           typed fetch client; all errors surface as toasts
+  lib/import-progress.ts  pure: which sentence describes a job's stage progress
   shared/types.ts      domain types shared by server and client
   server/
     db/                Drizzle schema + singleton client (WAL SQLite; migrations applied by
@@ -32,6 +36,7 @@ src/
                        image-generation.ts (product shots) · agent.ts (Claude Agent SDK,
                        chat only) · tools.ts (wardrobe MCP tools) · chat.ts (SSE)
 scripts/               boot.ts (migrate + recover, runs as npm prestart/predev) ·
+                       shots.ts (screenshot every screen via local Edge) ·
                        seed.ts (placeholder wardrobe) · vertex-probe.ts (what models
                        the current credentials can reach) · cutout-diag.ts
 drizzle/               generated SQL migrations (npm run db:generate after schema changes)
@@ -113,3 +118,15 @@ works on the laptop and not on the VM.**
   recomputed caches. Marking a calendar plan "worn" writes the wear event.
 - Trips tables exist for the travel feature (Phase 1 = schema only, tools/UI later).
 - Backup = zip of `data/` via Settings → Export (`/api/export`).
+
+## The look
+
+One type scale in `@theme` (`globals.css`). **Tracked uppercase is rationed to three roles** —
+the page `<h1>`, the wordmark, the nav — and everything else is sentence case, because when
+every string shouts none of them do. Three surface tiers (`.card` raised paper, `.well`
+recessed, `border-line` for dividers and controls) replace the single hairline that used to be
+on containers and 9px buttons alike. All motion is CSS, all of it inside one
+`prefers-reduced-motion` block. **`docs/DESIGN.md` §10.**
+
+`npm run shots` writes a full-page PNG of every screen at 1440px and 390px using the Edge
+already installed on the machine — the only way this repo can be looked at rather than read.
