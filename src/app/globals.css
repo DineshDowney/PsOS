@@ -102,9 +102,41 @@ html {
   font-synthesis: none;
 }
 
+/*
+ * Ambient background wash — two soft radial glows (accent + surface tones)
+ * that drift very slowly. The "feels alive, not static" quality without
+ * video weight: no asset, no JS, composited from tokens already in use.
+ * Cards/.well are opaque, so this only shows through page margins, empty
+ * states, and full-bleed on /login where nothing sits on top of it.
+ */
 body {
   font-size: var(--text-body);
   line-height: 1.55;
+  background:
+    radial-gradient(45% 35% at 50% 50%, rgb(110 48 46 / 0.07), transparent 70%),
+    radial-gradient(40% 30% at 50% 50%, rgb(235 231 221 / 0.9), transparent 70%),
+    var(--color-bg);
+  background-size:
+    160% 160%,
+    160% 160%,
+    auto;
+  background-repeat: no-repeat;
+  animation: ambient-drift 48s var(--ease-out) infinite alternate;
+}
+
+@keyframes ambient-drift {
+  from {
+    background-position:
+      10% 15%,
+      85% 80%,
+      0 0;
+  }
+  to {
+    background-position:
+      35% 30%,
+      65% 65%,
+      0 0;
+  }
 }
 
 ::selection {
@@ -314,6 +346,7 @@ body {
  * belongs in here too.
  */
 @media (prefers-reduced-motion: reduce) {
+  body,
   .tile-in,
   .fade-in,
   .toast-in,
